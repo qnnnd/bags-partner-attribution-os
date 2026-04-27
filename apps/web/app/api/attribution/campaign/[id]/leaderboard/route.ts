@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@bags/db";
 import { AttributionType, ConversionStatus } from "@bags/shared";
+import { solscanTxLink } from "@bags/bags-client";
 import { MOCK_LEADERBOARD, MOCK_CAMPAIGN } from "../../../../../../lib/mock-data";
 
 interface RouteParams {
@@ -70,9 +71,11 @@ export async function GET(_request: Request, { params }: RouteParams) {
   const conversions = await prisma.attributionConversion.findMany({
     where: { campaignId: id },
     orderBy: { createdAt: "desc" },
-    distinct: ["affiliateId"],
   });
-  const conversionMap = new Map(conversions.map((c) => [c.affiliateId, c]));
+  const conversionMap = new Map<string, typeof conversions[0]>();
+  for (const c of conversions) {
+    if (!conversionMap.has(c.affiliateId)) conversionMap.set(c.affiliateId, c);
+  }
 
   const entries = affiliates.map((aff, idx) => {
     const counts = countMap.get(aff.id) ?? {};
@@ -85,6 +88,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
     const confidenceScore = conv?.confidenceScore ?? (walletConnects > 0 ? 45 : clicks > 0 ? 20 : 0);
     const attributionType = conv?.attributionType ?? (walletConnects > 0 ? "wallet_intent" : "click");
     const status = conv?.status ?? "candidate";
+
+    const txSignature = conv?.txSignature ?? null;
+    const solscanLink = txSignature ? solscanTxLink(txSignature) : null;
 
     return {
       rank: idx + 1,
@@ -102,6 +108,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
       unclaimedFeesLamports: fee ? fee.unclaimedFeesLamports.toString() : "0",
       status: status as ConversionStatus,
       riskLevel: null,
+      reason: conv?.reason ?? null,
+      solscanLink,
+      txSignature,
     };
   });
 

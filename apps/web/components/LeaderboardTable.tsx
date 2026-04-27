@@ -67,6 +67,9 @@ export function LeaderboardTable({ entries }: LeaderboardTableProps) {
             <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
               Risk
             </th>
+            <th className="px-4 py-3 text-center text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
+              On-chain
+            </th>
           </tr>
         </thead>
         <tbody className="divide-y divide-[var(--border)] bg-[var(--surface-2)]">
@@ -94,6 +97,11 @@ export function LeaderboardTable({ entries }: LeaderboardTableProps) {
                   <p className="font-mono text-xs text-[var(--muted)]">
                     {entry.refCode}
                   </p>
+                  {entry.status === ConversionStatus.Suspicious && (
+                    <span className="mt-0.5 inline-block rounded bg-red-500/20 px-1.5 py-0.5 text-xs text-red-400">
+                      Suspicious
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right text-white">
                   {entry.clicks.toLocaleString()}
@@ -105,9 +113,17 @@ export function LeaderboardTable({ entries }: LeaderboardTableProps) {
                   {entry.attributedConversions.toLocaleString()}
                 </td>
                 <td className="px-4 py-3 text-center">
-                  <span className={`font-semibold ${conf.color}`}>
+                  <span
+                    className={`font-semibold ${conf.color}`}
+                    title={entry.reason ?? undefined}
+                  >
                     {conf.label} ({entry.confidenceScore})
                   </span>
+                  {entry.reason && (
+                    <p className="mt-0.5 text-xs text-[var(--muted)] max-w-[160px] truncate" title={entry.reason}>
+                      {entry.reason}
+                    </p>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-center">
                   <span
@@ -129,6 +145,21 @@ export function LeaderboardTable({ entries }: LeaderboardTableProps) {
                     >
                       {entry.riskLevel}
                     </span>
+                  ) : (
+                    <span className="text-[var(--muted)]">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-center">
+                  {entry.solscanLink ? (
+                    <a
+                      href={entry.solscanLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-xs text-green-400 hover:bg-green-500/20 transition"
+                      title={entry.txSignature}
+                    >
+                      ↗ Solscan
+                    </a>
                   ) : (
                     <span className="text-[var(--muted)]">—</span>
                   )}

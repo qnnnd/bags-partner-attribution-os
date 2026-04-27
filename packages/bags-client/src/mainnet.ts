@@ -8,14 +8,14 @@
  *   - All methods are purely read-only
  *   - Falls back to demo fixtures when BAGS_ENABLE_FIXTURE_FALLBACK=true or on error
  *
- * Implementation strategy for Phase 2:
- *   Bags exposes partner stats and token fee data through a combination of
- *   their REST API (BAGS_API_BASE) and Solana on-chain account reads via
- *   @solana/web3.js. This client abstracts both.
+ * Phase 2: Bags REST API for partner stats / token fees.
+ * Phase 3: Solana RPC read-only for on-chain buy candidate detection.
  */
 
+import { Connection, PublicKey } from "@solana/web3.js";
 import type {
   BagsClient,
+  OnchainBuyCandidate,
   PartnerClaimStats,
   PartnerConfig,
   TokenClaimEvent,
@@ -26,8 +26,10 @@ import {
   DEMO_FIXTURE_CLAIM_EVENTS,
   DEMO_FIXTURE_PARTNER_CONFIGS,
   DEMO_FIXTURE_PARTNER_STATS,
+  DEMO_FIXTURE_ONCHAIN_CANDIDATES,
   makeEmptyPartnerStats,
 } from "./fixtures";
+import { solscanTxLink } from "./solscan";
 
 // Bags REST API base URL (configurable, defaults to mainnet-beta endpoint)
 const BAGS_API_BASE =
@@ -148,6 +150,84 @@ export class MainnetBagsClient implements BagsClient {
     } catch (err) {
       console.warn(`[MainnetBagsClient] getPartnerConfig fallback for ${partnerWallet}:`, err);
       return DEMO_FIXTURE_PARTNER_CONFIGS[partnerWallet] ?? null;
+    }
+  }
+
+  /**
+   * Query a wallet's recent transactions on-chain for buy candidates involving
+   * the target token mint. Pure read-only — no transactions sent, no key needed.
+   *
+   * Strategy:
+   *   1. getSignaturesForAddress for the buyer wallet (up to 50 recent sigs)
+   *   2. For each sig within the window, getParsedTransaction
+   *   3. Check if pre/postTokenBalances contain the target mint
+   *   4. Return matching candidates with Solscan links
+   */
+  async getWalletTokenActivity(
+    walletAddress: string,
+    tokenMint: string,
+    since: Date,
+  ): Promise<OnchainBuyCandidate[]> {
+    if (USE_FIXTURE_FALLBACK) {
+      const candidates = DEMO_FIXTURE_ONCHAIN_CANDIDATES[walletAddress] ?? [];
+      return candidates.filter((c) => c.tokenMint === tokenMint && c.timestamp >= since);
+    }
+    try {
+      const connection = new Connection(SOLANA_RPC_URL, "confirmed");
+      const pubkey = new PublicKey(walletAddress);
+      const sinceUnix = Math.floor(since.getTime() / 1000);
+
+      const signatures = await connection.getSignaturesForAddress(pubkey, {
+        limit: 50,
+      });
+
+      const candidates: OnchainBuyCandidate[] = [];
+
+      for (const sigInfo of signatures) {
+        // Skip transactions older than the attribution window
+        if (sigInfo.blockTime != null && sigInfo.blockTime < sinceUnix) continue;
+        // Skip failed transactions
+        if (sigInfo.err != null) continue;
+
+        let tx;
+        try {
+          tx = await connection.getParsedTransaction(sigInfo.signature, {
+            maxSupportedTransactionVersion: 0,
+          });
+        } catch {
+          continue;
+        }
+        if (!tx) continue;
+
+        const preBalances = tx.meta?.preTokenBalances ?? [];
+        const postBalances = tx.meta?.postTokenBalances ?? [];
+        const involvesMint =
+          preBalances.some((b) => b.mint === tokenMint) ||
+          postBalances.some((b) => b.mint === tokenMint);
+
+        if (involvesMint) {
+          const timestamp =
+            sigInfo.blockTime != null
+              ? new Date(sigInfo.blockTime * 1000)
+              : new Date();
+          candidates.push({
+            txSignature: sigInfo.signature,
+            walletAddress,
+            tokenMint,
+            timestamp,
+            solscanLink: solscanTxLink(sigInfo.signature),
+          });
+        }
+      }
+
+      return candidates;
+    } catch (err) {
+      console.warn(
+        `[MainnetBagsClient] getWalletTokenActivity fallback for ${walletAddress}:`,
+        err,
+      );
+      const candidates = DEMO_FIXTURE_ONCHAIN_CANDIDATES[walletAddress] ?? [];
+      return candidates.filter((c) => c.tokenMint === tokenMint && c.timestamp >= since);
     }
   }
 

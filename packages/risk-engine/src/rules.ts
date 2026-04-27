@@ -5,6 +5,7 @@ import {
   REPEATED_CLICK_WINDOW_MINUTES,
   TINY_BUY_THRESHOLD_LAMPORTS,
   ABNORMAL_CONVERSION_RATIO_THRESHOLD,
+  BURST_WALLET_THRESHOLD,
   SCORE_MODIFIERS,
 } from "@bags/shared";
 import type { RiskFlag, RiskInput } from "./types";
@@ -85,9 +86,42 @@ export function checkAbnormalConversion(input: RiskInput): RiskFlag | null {
   return null;
 }
 
+/**
+ * Rule: burst_activity — multiple distinct wallets triggered events for this
+ * affiliate's ref within a short burst window.
+ * medium risk at threshold; high risk at 2× threshold.
+ */
+export function checkBurstActivity(input: RiskInput): RiskFlag | null {
+  if (input.burstWalletCount < BURST_WALLET_THRESHOLD) return null;
+
+  const isHigh = input.burstWalletCount >= BURST_WALLET_THRESHOLD * 2;
+  return {
+    riskType: RiskType.BurstActivity,
+    severity: isHigh ? RiskSeverity.High : RiskSeverity.Medium,
+    scoreDelta: isHigh ? SCORE_MODIFIERS.SELF_BUY : SCORE_MODIFIERS.REPEATED_CLICK,
+    reason: `${input.burstWalletCount} distinct wallets triggered events within ${input.burstWindowMinutes} minutes (threshold: ${BURST_WALLET_THRESHOLD}).`,
+  };
+}
+
+/**
+ * Rule: missing_wallet — affiliate has click events but no wallet_connect.
+ * Low severity: signals the attribution cannot reach WalletIntent level.
+ */
+export function checkMissingWallet(input: RiskInput): RiskFlag | null {
+  if (!input.hasMissingWallet) return null;
+  return {
+    riskType: RiskType.NewWallet,
+    severity: RiskSeverity.Low,
+    scoreDelta: 0,
+    reason: "Affiliate has click events but no wallet connection recorded. Attribution limited to Click level.",
+  };
+}
+
 export const ALL_RULES = [
   checkSelfBuy,
   checkRepeatedClick,
   checkTinyBuy,
   checkAbnormalConversion,
+  checkBurstActivity,
+  checkMissingWallet,
 ] as const;

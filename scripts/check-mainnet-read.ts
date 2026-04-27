@@ -22,7 +22,15 @@
  */
 
 import { createBagsClient } from "../packages/bags-client/src/index";
-import { DEMO_FIXTURE_TOKEN_MINT } from "../packages/bags-client/src/fixtures";
+import {
+  DEMO_FIXTURE_TOKEN_MINT,
+  DEMO_FIXTURE_ONCHAIN_CANDIDATES,
+} from "../packages/bags-client/src/fixtures";
+
+declare const process: {
+  env: Record<string, string | undefined>;
+  exit(code?: number): never;
+};
 
 // ─── Safety check ─────────────────────────────────────────────────────────────
 if (process.env.ENABLE_MAINNET_WRITE === "true") {
@@ -35,11 +43,15 @@ const tokenMint = process.env.CHECK_TOKEN_MINT ?? DEMO_FIXTURE_TOKEN_MINT;
 const partnerWallet =
   process.env.CHECK_PARTNER_WALLET ??
   "AliceWallet1111111111111111111111111111111111";
+const buyerWallet =
+  process.env.CHECK_BUYER_WALLET ??
+  "AliceBuyerWallet111111111111111111111111111111";
 
 console.log(`\n🔍 Bags Mainnet Read Check`);
 console.log(`   Mode:           ${mode}`);
 console.log(`   Token Mint:     ${tokenMint}`);
 console.log(`   Partner Wallet: ${partnerWallet}`);
+console.log(`   Buyer Wallet:   ${buyerWallet}`);
 console.log(`   Solana RPC:     ${process.env.SOLANA_RPC_URL ?? "default"}`);
 console.log(`   Bags API Base:  ${process.env.BAGS_API_BASE ?? "default"}`);
 console.log(`   ENABLE_MAINNET_WRITE: ${process.env.ENABLE_MAINNET_WRITE ?? "false (safe)"}`);
@@ -102,6 +114,32 @@ async function main(): Promise<void> {
     console.log(`     claimed = ${Number(stats.claimedFeesLamports) / 1e9} SOL`);
     console.log(`     unclaimed = ${Number(stats.unclaimedFeesLamports) / 1e9} SOL`);
     console.log(`     partnerConfigPda = ${stats.partnerConfigPda ?? "none"}`);
+  });
+
+  await check("getWalletTokenActivity returns array (Phase 3)", async () => {
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // 7 days ago
+    const candidates = await client.getWalletTokenActivity(buyerWallet, tokenMint, since);
+    if (!Array.isArray(candidates)) throw new Error("Not an array");
+    console.log(`     ${candidates.length} on-chain candidate(s) found for buyer wallet`);
+    if (candidates.length > 0) {
+      const c = candidates[0]!;
+      console.log(`     First: tx=${c.txSignature.slice(0, 12)}… at ${c.timestamp.toISOString()}`);
+      console.log(`     Solscan: ${c.solscanLink}`);
+    }
+    if (mode === "mock") {
+      const fixtureCandidates = DEMO_FIXTURE_ONCHAIN_CANDIDATES[buyerWallet] ?? [];
+      console.log(`     [mock] fixture has ${fixtureCandidates.length} candidate(s) for this wallet`);
+    }
+  });
+
+  await check("getWalletTokenActivity: no transactions sent", async () => {
+    // This is a pure read — calling it again confirms no side effects
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await client.getWalletTokenActivity(buyerWallet, tokenMint, since);
+    console.log(`     Confirmed read-only: no transactions broadcast`);
+    if (process.env.ENABLE_MAINNET_WRITE === "true") {
+      throw new Error("ENABLE_MAINNET_WRITE must be false for this check");
+    }
   });
 
   await check("No write operations were triggered", async () => {

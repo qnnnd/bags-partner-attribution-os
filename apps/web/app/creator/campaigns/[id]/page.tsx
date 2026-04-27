@@ -155,9 +155,29 @@ function renderDetail(
             <p className="mt-0.5 text-xs text-[var(--muted)]">Attribution window: {window / 60}h • ID: {id}</p>
           </div>
           {!isMock && (
-            <Link href={`/creator/campaigns/${id}/affiliates/new`} className="rounded-lg border border-purple-500/40 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-300 hover:bg-purple-500/20 transition">
-              + Add Affiliate
-            </Link>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                href={`/creator/campaigns/${id}/payouts`}
+                className="rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-2 text-sm font-medium text-green-300 hover:bg-green-500/20 transition"
+              >
+                Payouts
+              </Link>
+              <Link
+                href={`/creator/campaigns/${id}/partner-claims`}
+                className="rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2 text-sm font-medium text-blue-300 hover:bg-blue-500/20 transition"
+              >
+                Partner Claims
+              </Link>
+              <Link
+                href={`/creator/campaigns/${id}/risk`}
+                className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-300 hover:bg-red-500/20 transition"
+              >
+                Risk Review
+              </Link>
+              <Link href={`/creator/campaigns/${id}/affiliates/new`} className="rounded-lg border border-purple-500/40 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-300 hover:bg-purple-500/20 transition">
+                + Add Affiliate
+              </Link>
+            </div>
           )}
         </div>
 
@@ -192,7 +212,13 @@ function renderDetail(
         <div className="mt-6 rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4">
           <p className="text-xs text-yellow-500/80">
             <strong>Attribution Notice:</strong> These are <em>confidence-based attribution candidates</em>, not 100% verified conversions.
-            Use <strong>Sync Partner Stats</strong> + <strong>Recompute Attribution</strong> to merge Bags on-chain fee data.
+            Use <strong>Sync Partner Stats</strong> + <strong>Recompute Attribution</strong> to merge Bags on-chain fee data and detect on-chain buy candidates.
+            {" "}Suspicious conversions are excluded from the suggested payout report.{" "}
+            {!isMock && (
+              <Link href={`/creator/campaigns/${id}/risk`} className="underline text-yellow-400 hover:text-yellow-300">
+                View Risk Review →
+              </Link>
+            )}
           </p>
         </div>
       </main>

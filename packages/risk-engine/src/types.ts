@@ -23,6 +23,18 @@ export interface RiskInput {
   sameIpUaClickCount: number;
   /** Time window in minutes used for the sameIpUaClickCount */
   sameIpUaWindowMinutes: number;
+  /**
+   * Phase 3: number of distinct wallets that triggered events for this
+   * affiliate's ref code within the burst window. Used for burst_activity rule.
+   */
+  burstWalletCount: number;
+  /** Duration of the burst window in minutes */
+  burstWindowMinutes: number;
+  /**
+   * Phase 3: true when the affiliate has clicks but no wallet_connect event.
+   * Used for the missing_wallet rule.
+   */
+  hasMissingWallet: boolean;
 }
 
 // ─── Output ───────────────────────────────────────────────────────────────────

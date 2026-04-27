@@ -1,11 +1,13 @@
 import { MOCK_TOKEN_MINT } from "@bags/shared";
 import type {
   BagsClient,
+  OnchainBuyCandidate,
   PartnerClaimStats,
   PartnerConfig,
   TokenClaimEvent,
   TokenFeeStats,
 } from "./types";
+import { DEMO_FIXTURE_ONCHAIN_CANDIDATES } from "./fixtures";
 
 // Deterministic fixture wallets for the 3 mock affiliates
 const MOCK_AFFILIATES = [
@@ -63,6 +65,22 @@ export class MockBagsClient implements BagsClient {
       isActive: true,
       createdAt: new Date("2026-04-01T00:00:00Z"),
     };
+  }
+
+  /**
+   * Returns on-chain buy candidates from demo fixtures for known buyer wallets.
+   * Filters by tokenMint and `since` timestamp.
+   * No network calls — safe for CI/unit tests.
+   */
+  async getWalletTokenActivity(
+    walletAddress: string,
+    tokenMint: string,
+    since: Date,
+  ): Promise<OnchainBuyCandidate[]> {
+    const candidates = DEMO_FIXTURE_ONCHAIN_CANDIDATES[walletAddress] ?? [];
+    return candidates.filter(
+      (c) => c.tokenMint === tokenMint && c.timestamp >= since,
+    );
   }
 
   async getPartnerClaimStats(

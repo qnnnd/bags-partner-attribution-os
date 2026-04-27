@@ -38,6 +38,23 @@ export interface PartnerClaimStats {
   raw?: Record<string, unknown>;
 }
 
+// ─── On-chain Buy Candidate ───────────────────────────────────────────────────
+
+/**
+ * Represents a candidate on-chain buy transaction found for a buyer wallet
+ * within the attribution window. This is NOT proof of attribution — it means
+ * the wallet transacted with the target token mint during the window.
+ */
+export interface OnchainBuyCandidate {
+  txSignature: string;
+  walletAddress: string;
+  tokenMint: string;
+  /** Block timestamp of the transaction */
+  timestamp: Date;
+  /** Read-only Solscan explorer link */
+  solscanLink: string;
+}
+
 // ─── BagsClient Interface ─────────────────────────────────────────────────────
 
 export interface BagsClient {
@@ -45,6 +62,17 @@ export interface BagsClient {
   getTokenClaimEvents(tokenMint: string): Promise<TokenClaimEvent[]>;
   getPartnerConfig(partnerWallet: string): Promise<PartnerConfig | null>;
   getPartnerClaimStats(partnerWallet: string): Promise<PartnerClaimStats>;
+  /**
+   * Query a wallet's token activity on-chain (read-only).
+   * Returns candidates where the wallet transacted with the given token mint
+   * on or after `since`. Used for Phase 3 on-chain candidate detection.
+   * Never sends a transaction.
+   */
+  getWalletTokenActivity(
+    walletAddress: string,
+    tokenMint: string,
+    since: Date,
+  ): Promise<OnchainBuyCandidate[]>;
   // Optional write methods (Phase 5 only)
   createPartnerKeyTx?(partnerWallet: string): Promise<string>;
   getPartnerClaimTxs?(partnerWallet: string): Promise<string[]>;

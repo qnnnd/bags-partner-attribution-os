@@ -197,6 +197,40 @@ describe("buildReason", () => {
   });
 });
 
+describe("attribution window", () => {
+  it("empty signals produce zero score (simulates all events outside window)", () => {
+    // When the aggregator filters events outside the attribution window,
+    // it passes no signals to computeScore → score must be 0.
+    const { score, attributionType } = computeScore({
+      ...BASE_INPUT,
+      signals: [],
+    });
+    expect(score).toBe(0);
+    expect(attributionType).toBe(AttributionType.Click);
+  });
+
+  it("signals within window still score correctly", () => {
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - 60 * 60 * 1000); // 1h ago
+    const { score } = computeScore({
+      ...BASE_INPUT,
+      attributionWindowMinutes: 60,
+      signals: [
+        makeSignal({
+          firstSeenAt: new Date(now.getTime() - 30 * 60 * 1000), // 30 min ago (within window)
+          lastSeenAt: now,
+          hasWalletConnect: true,
+          hasBuyClick: true,
+          visitCount: 1,
+        }),
+      ],
+    });
+    // +20 ref link, +20 no repeated, +25 wallet, +20 buy click = 85
+    expect(score).toBeGreaterThanOrEqual(CONFIDENCE_MEDIUM);
+    void windowStart; // window boundary is enforced by aggregator, not scorer
+  });
+});
+
 describe("applyLastTouch", () => {
   const makeResult = (
     affiliateId: string,

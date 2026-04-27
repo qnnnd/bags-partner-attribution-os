@@ -12,7 +12,9 @@ export type {
   TokenClaimEvent,
   PartnerConfig,
   PartnerClaimStats,
+  OnchainBuyCandidate,
 } from "./types";
+export { solscanTxLink, solscanAccountLink } from "./solscan";
 
 /**
  * Factory: returns the correct BagsClient implementation based on

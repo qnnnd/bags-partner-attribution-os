@@ -1,9 +1,12 @@
 /**
- * Attribution Aggregator — Phase 2
+ * Attribution Aggregator — Phase 3
  *
- * Merges on-chain Bags fee data (from partner_fee_snapshots)
- * with local tracking events to produce enriched leaderboard entries
- * and attribution_conversions.
+ * Phase 2: Merges on-chain Bags fee data with local tracking events.
+ * Phase 3 additions:
+ *   - Attribution window enforcement (filter events by createdAt)
+ *   - On-chain buy candidate detection via BagsClient.getWalletTokenActivity
+ *   - tx_signature + solscanLink saved to AttributionConversion
+ *   - burst_activity and missing_wallet risk inputs
  */
 import { prisma } from "@bags/db";
 import { computeAttribution } from "@bags/attribution-engine";
@@ -11,7 +14,13 @@ import { evaluateRisk } from "@bags/risk-engine";
 import type { AttributionInput, TrackingSignal } from "@bags/attribution-engine";
 import type { RiskInput } from "@bags/risk-engine";
 import type { LeaderboardEntry } from "@bags/shared";
-import { AttributionType, ConversionStatus, RiskSeverity } from "@bags/shared";
+import {
+  AttributionType,
+  ConversionStatus,
+  RiskSeverity,
+  BURST_WINDOW_MINUTES,
+} from "@bags/shared";
+import { createBagsClient } from "@bags/bags-client";
 
 export interface AggregatedLeaderboardEntry extends LeaderboardEntry {
   partnerConfigPda: string | null;
@@ -22,6 +31,7 @@ export interface AggregatedLeaderboardEntry extends LeaderboardEntry {
 
 /**
  * Full attribution recompute for a campaign.
+ * Enforces attribution window, detects on-chain buy candidates, evaluates risk.
  */
 export async function recomputeAttribution(
   campaignId: string,
@@ -33,11 +43,19 @@ export async function recomputeAttribution(
   if (!campaign) throw new Error(`Campaign ${campaignId} not found`);
 
   const affiliates = campaign.affiliates;
+  const windowMinutes = campaign.attributionWindowMinutes;
+  const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
 
-  // Build event count map per affiliate
+  const bagsClient = createBagsClient();
+
+  // ── Event aggregation (within attribution window) ──────────────────────────
   const eventRows = await prisma.trackingEvent.groupBy({
     by: ["affiliateId", "eventType"],
-    where: { campaignId, affiliateId: { not: null } },
+    where: {
+      campaignId,
+      affiliateId: { not: null },
+      createdAt: { gte: windowStart },
+    },
     _count: { _all: true },
   });
   const eventMap = new Map<string, Record<string, number>>();
@@ -48,13 +66,51 @@ export async function recomputeAttribution(
     eventMap.set(row.affiliateId, e);
   }
 
-  // Latest partner fee snapshot per affiliate
+  // ── Latest partner fee snapshot per affiliate ──────────────────────────────
   const feeSnaps = await prisma.partnerFeeSnapshot.findMany({
     where: { campaignId, affiliateId: { not: null } },
     orderBy: { snapshotAt: "desc" },
     distinct: ["affiliateId"],
   });
   const feeMap = new Map(feeSnaps.map((s) => [s.affiliateId!, s]));
+
+  // ── Burst-activity: distinct wallets per affiliate within burst window ─────
+  const burstWindowStart = new Date(Date.now() - BURST_WINDOW_MINUTES * 60 * 1000);
+  const burstRows = await prisma.trackingEvent.groupBy({
+    by: ["affiliateId"],
+    where: {
+      campaignId,
+      affiliateId: { not: null },
+      walletAddress: { not: null },
+      createdAt: { gte: burstWindowStart },
+    },
+    _count: { _all: true },
+  });
+  const burstMap = new Map<string, number>();
+  for (const row of burstRows) {
+    if (!row.affiliateId) continue;
+    burstMap.set(row.affiliateId, row._count._all);
+  }
+
+  // ── Build buyer wallet map: affiliate → most recent connected wallet ───────
+  const walletRows = await prisma.trackingEvent.findMany({
+    where: {
+      campaignId,
+      affiliateId: { not: null },
+      eventType: "wallet_connect",
+      walletAddress: { not: null },
+      createdAt: { gte: windowStart },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { affiliateId: true, walletAddress: true },
+  });
+  const buyerWalletMap = new Map<string, string>();
+  for (const row of walletRows) {
+    if (!row.affiliateId || !row.walletAddress) continue;
+    if (!buyerWalletMap.has(row.affiliateId)) {
+      buyerWalletMap.set(row.affiliateId, row.walletAddress);
+    }
+  }
 
   const entries: AggregatedLeaderboardEntry[] = [];
 
@@ -64,18 +120,44 @@ export async function recomputeAttribution(
     const walletConnects = counts["wallet_connect"] ?? 0;
     const buyIntents = (counts["buy_click"] ?? 0) + (counts["outbound_to_bags"] ?? 0);
     const feeSnap = feeMap.get(aff.id);
+    const buyerWallet = buyerWalletMap.get(aff.id);
+    const burstWalletCount = burstMap.get(aff.id) ?? 0;
 
-    // Build TrackingSignal for attribution engine
+    // ── On-chain candidate detection ────────────────────────────────────────
+    let onchainTxSignature: string | undefined;
+    let onchainBuyAt: Date | undefined;
+    let solscanLink: string | undefined;
+
+    if (buyerWallet && (walletConnects > 0 || buyIntents > 0)) {
+      try {
+        const candidates = await bagsClient.getWalletTokenActivity(
+          buyerWallet,
+          campaign.tokenMint,
+          windowStart,
+        );
+        if (candidates.length > 0) {
+          // Use the most recent candidate
+          const best = candidates.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0]!;
+          onchainTxSignature = best.txSignature;
+          onchainBuyAt = best.timestamp;
+          solscanLink = best.solscanLink;
+        }
+      } catch {
+        // Non-fatal: proceed without on-chain candidate
+      }
+    }
+
+    // ── Attribution scoring ──────────────────────────────────────────────────
     const signal: TrackingSignal = {
       sessionId: `agg-${aff.id}`,
       affiliateId: aff.id,
       refCode: aff.refCode,
-      walletAddress: walletConnects > 0 ? aff.walletAddress : undefined,
+      walletAddress: buyerWallet,
       hasWalletConnect: walletConnects > 0,
       hasBuyClick: buyIntents > 0,
-      hasOnchainCandidate: false,
+      hasOnchainCandidate: onchainTxSignature != null,
       visitCount: clicks,
-      firstSeenAt: new Date(),
+      firstSeenAt: windowStart,
       lastSeenAt: new Date(),
     };
 
@@ -83,20 +165,21 @@ export async function recomputeAttribution(
       campaignId,
       affiliateId: aff.id,
       affiliateWallet: aff.walletAddress,
-      buyerWallet: undefined,
+      buyerWallet,
       tokenMint: campaign.tokenMint,
-      attributionWindowMinutes: campaign.attributionWindowMinutes,
+      attributionWindowMinutes: windowMinutes,
       signals: clicks > 0 || walletConnects > 0 || buyIntents > 0 ? [signal] : [],
+      onchainBuyAt,
     };
 
     const attributionResult = computeAttribution(attributionInput);
 
-    // Risk evaluation
+    // ── Risk evaluation ──────────────────────────────────────────────────────
     const riskInput: RiskInput = {
       campaignId,
       affiliateId: aff.id,
       affiliateWallet: aff.walletAddress,
-      buyerWallet: undefined,
+      buyerWallet,
       clickCount: clicks,
       buyIntentCount: buyIntents,
       walletEventCount: walletConnects,
@@ -105,11 +188,14 @@ export async function recomputeAttribution(
         : BigInt(0),
       sameIpUaClickCount: 0,
       sameIpUaWindowMinutes: 10,
+      burstWalletCount,
+      burstWindowMinutes: BURST_WINDOW_MINUTES,
+      hasMissingWallet: clicks > 0 && walletConnects === 0,
     };
     const riskResult = evaluateRisk(riskInput);
 
     const totalRiskDelta = riskResult.flags.reduce((s, f) => s + f.scoreDelta, 0);
-    const finalScore = Math.max(0, attributionResult.confidenceScore - totalRiskDelta);
+    const finalScore = Math.max(0, attributionResult.confidenceScore + totalRiskDelta);
 
     const status: ConversionStatus =
       riskResult.riskLevel === "high"
@@ -122,7 +208,7 @@ export async function recomputeAttribution(
       ? feeSnap.claimedFeesLamports + feeSnap.unclaimedFeesLamports
       : BigInt(0);
 
-    // Upsert attribution_conversion
+    // ── Upsert attribution_conversion ────────────────────────────────────────
     const existingConversion = await prisma.attributionConversion.findFirst({
       where: { campaignId, affiliateId: aff.id },
       orderBy: { createdAt: "desc" },
@@ -137,6 +223,8 @@ export async function recomputeAttribution(
           status: status as never,
           reason: attributionResult.reason,
           attributedVolumeLamports: attributedVolume,
+          ...(onchainTxSignature ? { txSignature: onchainTxSignature } : {}),
+          buyerWallet: buyerWallet ?? existingConversion.buyerWallet,
         },
       });
     } else if (buyIntents > 0 || walletConnects > 0) {
@@ -144,9 +232,9 @@ export async function recomputeAttribution(
         data: {
           campaignId,
           affiliateId: aff.id,
-          buyerWallet: null,
+          buyerWallet: buyerWallet ?? null,
           tokenMint: campaign.tokenMint,
-          txSignature: null,
+          txSignature: onchainTxSignature ?? null,
           attributionType: attributionResult.attributionType as never,
           confidenceScore: finalScore,
           attributedVolumeLamports: attributedVolume,
@@ -156,7 +244,7 @@ export async function recomputeAttribution(
       });
     }
 
-    // Save risk flags
+    // ── Save risk flags (skip duplicates) ────────────────────────────────────
     if (riskResult.flags.length > 0) {
       await prisma.riskFlag.createMany({
         data: riskResult.flags.map((f) => ({
@@ -187,6 +275,9 @@ export async function recomputeAttribution(
       unclaimedFeesLamports: feeSnap ? Number(feeSnap.unclaimedFeesLamports) : 0,
       status,
       riskLevel: (riskResult.riskLevel as RiskSeverity) ?? null,
+      reason: attributionResult.reason,
+      solscanLink: solscanLink ?? undefined,
+      txSignature: onchainTxSignature,
       partnerConfigPda: aff.partnerConfigPda ?? null,
       feeBps: null,
       riskFlags: riskResult.flags.map((f) => ({

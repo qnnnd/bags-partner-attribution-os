@@ -1,9 +1,10 @@
 /**
- * Demo fixtures for Phase 2 fallback.
+ * Demo fixtures for Phase 2 + Phase 3 fallback.
  * Used when mainnet API is unreachable or in demo mode.
  * These represent realistic Bags mainnet-beta data shapes.
  */
-import type { TokenFeeStats, TokenClaimEvent, PartnerConfig, PartnerClaimStats } from "./types";
+import type { TokenFeeStats, TokenClaimEvent, PartnerConfig, PartnerClaimStats, OnchainBuyCandidate } from "./types";
+import { solscanTxLink } from "./solscan";
 
 export const DEMO_FIXTURE_TOKEN_MINT =
   "So11111111111111111111111111111111111111112"; // Wrapped SOL as placeholder
@@ -101,3 +102,39 @@ export function makeEmptyPartnerStats(partnerWallet: string): PartnerClaimStats 
     raw: { source: "fixture", note: "no partner config found" },
   };
 }
+
+// ─── Phase 3: On-chain Buy Candidate Fixtures ────────────────────────────────
+
+/**
+ * Demo on-chain buy candidates for Phase 3 testing.
+ * Keyed by buyer wallet address. Each entry is a list of candidate
+ * transactions that involve DEMO_FIXTURE_TOKEN_MINT.
+ *
+ * These are fixture-only: no real on-chain data.
+ */
+
+const DEMO_TX_ALICE = "5xAliceBuyTx" + "A".repeat(76);
+const DEMO_TX_BOB = "7zBobBuyTx11" + "B".repeat(76);
+
+export const DEMO_FIXTURE_ONCHAIN_CANDIDATES: Record<string, OnchainBuyCandidate[]> = {
+  // Alice's buyer wallet: one clean buy within the attribution window
+  AliceBuyerWallet111111111111111111111111111111: [
+    {
+      txSignature: DEMO_TX_ALICE,
+      walletAddress: "AliceBuyerWallet111111111111111111111111111111",
+      tokenMint: DEMO_FIXTURE_TOKEN_MINT,
+      timestamp: new Date("2026-04-27T10:00:00Z"),
+      solscanLink: solscanTxLink(DEMO_TX_ALICE),
+    },
+  ],
+  // Bob's buyer wallet: one buy within the window
+  BobBuyerWallet1111111111111111111111111111111: [
+    {
+      txSignature: DEMO_TX_BOB,
+      walletAddress: "BobBuyerWallet1111111111111111111111111111111",
+      tokenMint: DEMO_FIXTURE_TOKEN_MINT,
+      timestamp: new Date("2026-04-27T11:30:00Z"),
+      solscanLink: solscanTxLink(DEMO_TX_BOB),
+    },
+  ],
+};

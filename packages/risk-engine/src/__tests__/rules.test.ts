@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { RiskType, RiskSeverity } from "@bags/shared";
+import { RiskType, RiskSeverity, BURST_WALLET_THRESHOLD } from "@bags/shared";
 import {
   checkSelfBuy,
   checkRepeatedClick,
   checkTinyBuy,
   checkAbnormalConversion,
+  checkBurstActivity,
+  checkMissingWallet,
 } from "../rules";
 import { evaluateRisk } from "../index";
 import type { RiskInput } from "../types";
@@ -18,6 +20,9 @@ const BASE_INPUT: RiskInput = {
   walletEventCount: 10,
   sameIpUaClickCount: 1,
   sameIpUaWindowMinutes: 60,
+  burstWalletCount: 0,
+  burstWindowMinutes: 5,
+  hasMissingWallet: false,
 };
 
 describe("checkSelfBuy", () => {
@@ -142,6 +147,39 @@ describe("checkAbnormalConversion", () => {
   });
 });
 
+describe("checkBurstActivity", () => {
+  it("returns null when wallet count is below threshold", () => {
+    expect(checkBurstActivity({ ...BASE_INPUT, burstWalletCount: BURST_WALLET_THRESHOLD - 1 })).toBeNull();
+  });
+
+  it("returns medium-severity flag at threshold", () => {
+    const result = checkBurstActivity({ ...BASE_INPUT, burstWalletCount: BURST_WALLET_THRESHOLD });
+    expect(result).not.toBeNull();
+    expect(result!.riskType).toBe(RiskType.BurstActivity);
+    expect(result!.severity).toBe(RiskSeverity.Medium);
+  });
+
+  it("returns high-severity flag at 2× threshold", () => {
+    const result = checkBurstActivity({ ...BASE_INPUT, burstWalletCount: BURST_WALLET_THRESHOLD * 2 });
+    expect(result).not.toBeNull();
+    expect(result!.severity).toBe(RiskSeverity.High);
+  });
+});
+
+describe("checkMissingWallet", () => {
+  it("returns null when hasMissingWallet is false", () => {
+    expect(checkMissingWallet({ ...BASE_INPUT, hasMissingWallet: false })).toBeNull();
+  });
+
+  it("returns low-severity flag when hasMissingWallet is true", () => {
+    const result = checkMissingWallet({ ...BASE_INPUT, hasMissingWallet: true });
+    expect(result).not.toBeNull();
+    expect(result!.riskType).toBe(RiskType.NewWallet);
+    expect(result!.severity).toBe(RiskSeverity.Low);
+    expect(result!.scoreDelta).toBe(0);
+  });
+});
+
 describe("evaluateRisk", () => {
   it("returns no flags for clean input", () => {
     const result = evaluateRisk(BASE_INPUT);
@@ -165,6 +203,7 @@ describe("evaluateRisk", () => {
       sameIpUaClickCount: 10,
       sameIpUaWindowMinutes: 10,
       attributedVolumeLamports: BigInt(500_000),
+      hasMissingWallet: false,
     });
     expect(result.flags.length).toBeGreaterThanOrEqual(2);
     expect(result.riskLevel).toBe(RiskSeverity.Medium);

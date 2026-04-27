@@ -28,6 +28,10 @@ export const REPEATED_CLICK_THRESHOLD = 10;
 export const TINY_BUY_THRESHOLD_LAMPORTS = 1_000_000; // 0.001 SOL
 export const ABNORMAL_CONVERSION_RATIO_THRESHOLD = 0.9; // > 90% buy intents from clicks
 
+// Phase 3: burst activity thresholds
+export const BURST_WALLET_THRESHOLD = 5; // distinct wallets within burst window
+export const BURST_WINDOW_MINUTES = 5; // minutes to consider a burst
+
 // ─── Mock Token ───────────────────────────────────────────────────────────────
 
 export const MOCK_TOKEN_MINT = "MockToken11111111111111111111111111111111111";

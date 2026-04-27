@@ -95,4 +95,10 @@ export interface LeaderboardEntry {
   unclaimedFeesLamports: bigint | number;
   status: ConversionStatus;
   riskLevel: RiskSeverity | null;
+  /** Phase 3: human-readable attribution reason */
+  reason?: string;
+  /** Phase 3: Solscan explorer link for the on-chain candidate tx */
+  solscanLink?: string;
+  /** Phase 3: raw on-chain tx signature */
+  txSignature?: string;
 }
