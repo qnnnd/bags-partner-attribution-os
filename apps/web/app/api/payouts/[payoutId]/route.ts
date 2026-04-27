@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@bags/db";
 import { lamportsToSolStr } from "../../../../lib/csv";
 import { solscanTxLink } from "@bags/bags-client";
+import { requireCreatorSession, requireCampaignCreator } from "../../../../lib/api-auth";
 
 interface RouteParams {
   params: Promise<{ payoutId: string }>;
@@ -14,6 +15,9 @@ interface RouteParams {
 
 export async function GET(_request: Request, { params }: RouteParams) {
   const { payoutId } = await params;
+
+  const { walletAddress, authError: sessionErr } = await requireCreatorSession();
+  if (sessionErr) return sessionErr;
 
   const ledger = await prisma.payoutLedger.findUnique({
     where: { id: payoutId },
@@ -31,6 +35,9 @@ export async function GET(_request: Request, { params }: RouteParams) {
   if (!ledger) {
     return NextResponse.json({ error: "Payout not found" }, { status: 404 });
   }
+
+  const { authError: campaignErr } = await requireCampaignCreator(ledger.campaignId, walletAddress!);
+  if (campaignErr) return campaignErr;
 
   return NextResponse.json({
     id: ledger.id,

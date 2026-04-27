@@ -19,6 +19,8 @@ export function computeAttribution(
   const status = resolveStatus(score, isSelfBuy, options.hasHighRisk ?? false);
   const reason = buildReason(score, breakdown, attributionType);
 
+  const lastSignal = input.signals.length > 0 ? input.signals[input.signals.length - 1] : null;
+
   return {
     campaignId: input.campaignId,
     affiliateId: input.affiliateId,
@@ -30,5 +32,6 @@ export function computeAttribution(
     status,
     reason,
     isLastTouch: true,
+    lastSignalAt: lastSignal?.lastSeenAt,
   };
 }

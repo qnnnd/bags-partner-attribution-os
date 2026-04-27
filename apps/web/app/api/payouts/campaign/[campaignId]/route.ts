@@ -8,6 +8,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@bags/db";
 import { lamportsToSolStr } from "../../../../../lib/csv";
 import { solscanTxLink } from "@bags/bags-client";
+import { requireCreatorSession, requireCampaignCreator } from "../../../../../lib/api-auth";
 
 interface RouteParams {
   params: Promise<{ campaignId: string }>;
@@ -15,6 +16,12 @@ interface RouteParams {
 
 export async function GET(_request: Request, { params }: RouteParams) {
   const { campaignId } = await params;
+
+  const { walletAddress, authError: sessionErr } = await requireCreatorSession();
+  if (sessionErr) return sessionErr;
+
+  const { authError: campaignErr } = await requireCampaignCreator(campaignId, walletAddress!);
+  if (campaignErr) return campaignErr;
 
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },

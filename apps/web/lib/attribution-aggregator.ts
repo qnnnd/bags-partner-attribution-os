@@ -6,7 +6,9 @@
  *   - Attribution window enforcement (filter events by createdAt)
  *   - On-chain buy candidate detection via BagsClient.getWalletTokenActivity
  *   - tx_signature + solscanLink saved to AttributionConversion
- *   - burst_activity and missing_wallet risk inputs
+ *   - burst_activity (distinct wallets) and missing_wallet risk inputs
+ *   - sameIpUaClickCount computed from real IP+UA hash data
+ *   - Stale risk flags cleared before recompute to prevent accumulation
  */
 import { prisma } from "@bags/db";
 import { computeAttribution } from "@bags/attribution-engine";
@@ -19,6 +21,7 @@ import {
   ConversionStatus,
   RiskSeverity,
   BURST_WINDOW_MINUTES,
+  REPEATED_CLICK_WINDOW_MINUTES,
 } from "@bags/shared";
 import { createBagsClient } from "@bags/bags-client";
 
@@ -32,6 +35,8 @@ export interface AggregatedLeaderboardEntry extends LeaderboardEntry {
 /**
  * Full attribution recompute for a campaign.
  * Enforces attribution window, detects on-chain buy candidates, evaluates risk.
+ *
+ * Clears stale risk flags before writing new ones to prevent accumulation.
  */
 export async function recomputeAttribution(
   campaignId: string,
@@ -45,6 +50,9 @@ export async function recomputeAttribution(
   const affiliates = campaign.affiliates;
   const windowMinutes = campaign.attributionWindowMinutes;
   const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
+
+  // ── Fix 7: Clear stale risk flags before recomputing to prevent accumulation ─
+  await prisma.riskFlag.deleteMany({ where: { campaignId } });
 
   const bagsClient = createBagsClient();
 
@@ -74,22 +82,47 @@ export async function recomputeAttribution(
   });
   const feeMap = new Map(feeSnaps.map((s) => [s.affiliateId!, s]));
 
-  // ── Burst-activity: distinct wallets per affiliate within burst window ─────
+  // ── Fix 4: Burst-activity — count DISTINCT wallets per affiliate in burst window ──
   const burstWindowStart = new Date(Date.now() - BURST_WINDOW_MINUTES * 60 * 1000);
-  const burstRows = await prisma.trackingEvent.groupBy({
-    by: ["affiliateId"],
+  const burstEvents = await prisma.trackingEvent.findMany({
     where: {
       campaignId,
       affiliateId: { not: null },
       walletAddress: { not: null },
       createdAt: { gte: burstWindowStart },
     },
-    _count: { _all: true },
+    select: { affiliateId: true, walletAddress: true },
   });
-  const burstMap = new Map<string, number>();
-  for (const row of burstRows) {
-    if (!row.affiliateId) continue;
-    burstMap.set(row.affiliateId, row._count._all);
+  const burstWalletSets = new Map<string, Set<string>>();
+  for (const ev of burstEvents) {
+    if (!ev.affiliateId || !ev.walletAddress) continue;
+    const wallets = burstWalletSets.get(ev.affiliateId) ?? new Set<string>();
+    wallets.add(ev.walletAddress);
+    burstWalletSets.set(ev.affiliateId, wallets);
+  }
+
+  // ── Fix 3: sameIpUaClickCount — max visits from one IP+UA pair per affiliate ──
+  const ipUaWindowStart = new Date(Date.now() - REPEATED_CLICK_WINDOW_MINUTES * 60 * 1000);
+  const ipUaEvents = await prisma.trackingEvent.findMany({
+    where: {
+      campaignId,
+      affiliateId: { not: null },
+      eventType: "visit",
+      ipHash: { not: null },
+      userAgentHash: { not: null },
+      createdAt: { gte: ipUaWindowStart },
+    },
+    select: { affiliateId: true, ipHash: true, userAgentHash: true },
+  });
+  const ipUaCountPerKey = new Map<string, number>(); // "affiliateId:ipHash:uaHash" → count
+  const sameIpUaMap = new Map<string, number>();      // affiliateId → max count
+  for (const ev of ipUaEvents) {
+    if (!ev.affiliateId || !ev.ipHash || !ev.userAgentHash) continue;
+    const key = `${ev.affiliateId}:${ev.ipHash}:${ev.userAgentHash}`;
+    const count = (ipUaCountPerKey.get(key) ?? 0) + 1;
+    ipUaCountPerKey.set(key, count);
+    const cur = sameIpUaMap.get(ev.affiliateId) ?? 0;
+    if (count > cur) sameIpUaMap.set(ev.affiliateId, count);
   }
 
   // ── Build buyer wallet map: affiliate → most recent connected wallet ───────
@@ -121,7 +154,8 @@ export async function recomputeAttribution(
     const buyIntents = (counts["buy_click"] ?? 0) + (counts["outbound_to_bags"] ?? 0);
     const feeSnap = feeMap.get(aff.id);
     const buyerWallet = buyerWalletMap.get(aff.id);
-    const burstWalletCount = burstMap.get(aff.id) ?? 0;
+    const burstWalletCount = burstWalletSets.get(aff.id)?.size ?? 0;
+    const sameIpUaClickCount = sameIpUaMap.get(aff.id) ?? 0;
 
     // ── On-chain candidate detection ────────────────────────────────────────
     let onchainTxSignature: string | undefined;
@@ -136,7 +170,6 @@ export async function recomputeAttribution(
           windowStart,
         );
         if (candidates.length > 0) {
-          // Use the most recent candidate
           const best = candidates.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0]!;
           onchainTxSignature = best.txSignature;
           onchainBuyAt = best.timestamp;
@@ -186,8 +219,8 @@ export async function recomputeAttribution(
       attributedVolumeLamports: feeSnap
         ? feeSnap.claimedFeesLamports + feeSnap.unclaimedFeesLamports
         : BigInt(0),
-      sameIpUaClickCount: 0,
-      sameIpUaWindowMinutes: 10,
+      sameIpUaClickCount,
+      sameIpUaWindowMinutes: REPEATED_CLICK_WINDOW_MINUTES,
       burstWalletCount,
       burstWindowMinutes: BURST_WINDOW_MINUTES,
       hasMissingWallet: clicks > 0 && walletConnects === 0,
@@ -244,7 +277,7 @@ export async function recomputeAttribution(
       });
     }
 
-    // ── Save risk flags (skip duplicates) ────────────────────────────────────
+    // ── Write risk flags (stale flags already deleted at start of recompute) ─
     if (riskResult.flags.length > 0) {
       await prisma.riskFlag.createMany({
         data: riskResult.flags.map((f) => ({
@@ -255,7 +288,6 @@ export async function recomputeAttribution(
           scoreDelta: f.scoreDelta,
           reason: f.reason,
         })),
-        skipDuplicates: true,
       });
     }
 

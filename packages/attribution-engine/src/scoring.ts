@@ -167,10 +167,13 @@ export function applyLastTouch(results: AttributionResult[]): AttributionResult[
 
   const out: AttributionResult[] = [];
   for (const group of byWallet.values()) {
-    // Sort descending by confidence; highest-confidence gets last-touch
-    const sorted = [...group].sort(
-      (a, b) => b.confidenceScore - a.confidenceScore,
-    );
+    // Sort by most recent signal timestamp (last-touch by time), break ties by confidence score
+    const sorted = [...group].sort((a, b) => {
+      const tA = a.lastSignalAt?.getTime() ?? 0;
+      const tB = b.lastSignalAt?.getTime() ?? 0;
+      if (tB !== tA) return tB - tA;
+      return b.confidenceScore - a.confidenceScore;
+    });
     out.push({ ...sorted[0]!, isLastTouch: true });
     for (const r of sorted.slice(1)) {
       out.push({ ...r, isLastTouch: false });

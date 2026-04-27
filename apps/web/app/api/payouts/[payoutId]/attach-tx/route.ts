@@ -23,6 +23,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@bags/db";
 import { validateTxSignatureFormat, verifyTxOnChain } from "../../../../../lib/tx-validator";
 import { solscanTxLink } from "@bags/bags-client";
+import { requireCreatorSession, requireCampaignCreator } from "../../../../../lib/api-auth";
 
 interface RouteParams {
   params: Promise<{ payoutId: string }>;
@@ -31,13 +32,19 @@ interface RouteParams {
 export async function POST(request: Request, { params }: RouteParams) {
   const { payoutId } = await params;
 
+  const { walletAddress, authError: sessionErr } = await requireCreatorSession();
+  if (sessionErr) return sessionErr;
+
   const ledger = await prisma.payoutLedger.findUnique({
     where: { id: payoutId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, campaignId: true },
   });
   if (!ledger) {
     return NextResponse.json({ error: "Payout not found" }, { status: 404 });
   }
+
+  const { authError: campaignErr } = await requireCampaignCreator(ledger.campaignId, walletAddress!);
+  if (campaignErr) return campaignErr;
   if (ledger.status !== "approved") {
     return NextResponse.json(
       {

@@ -5,6 +5,7 @@ import { customAlphabet } from "nanoid";
 
 const nanoid = customAlphabet("23456789abcdefghjkmnpqrstuvwxyz", 16);
 
+
 interface Props {
   campaignId: string;
   tokenMint: string;
@@ -26,6 +27,9 @@ export function CampaignTracker({
   const [walletAddress, setWalletAddress] = useState<string>("");
   const [walletConnected, setWalletConnected] = useState(false);
   const [buyStatus, setBuyStatus] = useState<TrackStatus>("idle");
+  const [connectError, setConnectError] = useState<string>("");
+
+  const isMockMode = process.env.NEXT_PUBLIC_BAGS_CLIENT_MODE === "mock";
 
   // Get or create sessionId on mount
   useEffect(() => {
@@ -45,14 +49,42 @@ export function CampaignTracker({
   }, [campaignId, refCode]);
 
   async function handleWalletConnect() {
-    const mockWallet = walletAddress || `MockBuyer${Math.random().toString(36).slice(2, 10)}111111111111111111111111111111`;
-    setWalletAddress(mockWallet);
+    setConnectError("");
+    let addr = walletAddress;
+
+    if (!addr) {
+      // Try Phantom wallet first
+      if (typeof window !== "undefined" && window.solana?.isPhantom) {
+        try {
+          const { publicKey } = await window.solana.connect();
+          addr = publicKey.toString();
+        } catch {
+          // User rejected connection — fall through to mock if applicable
+        }
+      }
+
+      // In mock mode fall back to a deterministic mock address
+      if (!addr && isMockMode) {
+        addr = `MockBuyer${Math.random().toString(36).slice(2, 10)}111111111111111111111111111111`;
+      }
+
+      if (!addr) {
+        setConnectError(
+          isMockMode
+            ? "Could not connect wallet."
+            : "Phantom wallet not found or connection rejected. Install Phantom to continue.",
+        );
+        return;
+      }
+    }
+
+    setWalletAddress(addr);
     setWalletConnected(true);
 
     await fetch("/api/tracking/wallet-connect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ campaignId, sessionId: sessionId.current, refCode, walletAddress: mockWallet }),
+      body: JSON.stringify({ campaignId, sessionId: sessionId.current, refCode, walletAddress: addr }),
     }).catch(console.error);
   }
 
@@ -87,16 +119,29 @@ export function CampaignTracker({
       )}
 
       {!walletConnected ? (
-        <button
-          onClick={handleWalletConnect}
-          className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] py-3 text-sm font-semibold text-white hover:border-purple-500/50 transition"
-          data-testid="connect-wallet-btn"
-        >
-          Connect Wallet
-        </button>
+        <div className="space-y-2">
+          {isMockMode && (
+            <input
+              type="text"
+              placeholder="Or paste a wallet address (mock mode)"
+              value={walletAddress}
+              onChange={(e) => setWalletAddress(e.target.value)}
+              className="w-full rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2 text-xs text-white placeholder-[var(--muted)] focus:border-purple-500 focus:outline-none"
+            />
+          )}
+          <button
+            onClick={handleWalletConnect}
+            className="w-full rounded-xl border border-[var(--border)] bg-[var(--surface)] py-3 text-sm font-semibold text-white hover:border-purple-500/50 transition"
+            data-testid="connect-wallet-btn"
+          >
+            {isMockMode ? "Connect Wallet (Mock)" : "Connect Phantom Wallet"}
+          </button>
+          {connectError && <p className="text-xs text-red-400">{connectError}</p>}
+        </div>
       ) : (
         <div className="rounded-xl border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-400">
           Wallet connected: <span className="font-mono text-xs">{walletAddress.slice(0, 8)}…</span>
+          {isMockMode && <span className="ml-2 text-xs text-[var(--muted)]">(mock)</span>}
         </div>
       )}
 

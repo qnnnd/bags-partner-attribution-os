@@ -54,4 +54,6 @@ export interface AttributionResult {
   status: ConversionStatus;
   reason: string;
   isLastTouch: boolean;
+  /** Timestamp of the most recent signal — used for time-based last-touch dedup */
+  lastSignalAt?: Date;
 }
