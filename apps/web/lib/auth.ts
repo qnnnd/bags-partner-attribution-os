@@ -1,5 +1,5 @@
 import * as ed from "@noble/ed25519";
-import { randomBytes, createHash } from "crypto";
+import { randomBytes } from "crypto";
 
 // @noble/ed25519 v3: configure synchronous SHA-512 via Node.js crypto (needed for sync path)
 // Async functions (signAsync, verifyAsync, getPublicKeyAsync) use WebCrypto and don't require this.

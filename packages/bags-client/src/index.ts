@@ -1,24 +1,40 @@
-export * from "./types";
-export { MockBagsClient, MOCK_AFFILIATE_FIXTURES, MOCK_TOKEN_MINT } from "./mock";
-
 import { MockBagsClient } from "./mock";
+import { MainnetBagsClient } from "./mainnet";
 import type { BagsClient, BagsClientMode } from "./types";
 
+export { MockBagsClient } from "./mock";
+export { MainnetBagsClient } from "./mainnet";
+export { MOCK_AFFILIATE_FIXTURES, MOCK_TOKEN_MINT } from "./mock";
+export * from "./fixtures";
+export type { BagsClient, BagsClientMode } from "./types";
+export type {
+  TokenFeeStats,
+  TokenClaimEvent,
+  PartnerConfig,
+  PartnerClaimStats,
+} from "./types";
+
+/**
+ * Factory: returns the correct BagsClient implementation based on
+ * BAGS_CLIENT_MODE environment variable.
+ *
+ * BAGS_CLIENT_MODE=mock            → MockBagsClient (default, safe for CI/dev)
+ * BAGS_CLIENT_MODE=mainnet-readonly → MainnetBagsClient (read-only, needs BAGS_API_KEY)
+ */
 export function createBagsClient(
-  mode?: BagsClientMode | string,
+  mode?: BagsClientMode,
 ): BagsClient {
-  const resolvedMode = mode ?? process.env.BAGS_CLIENT_MODE ?? "mock";
+  const resolved = (mode ?? process.env.BAGS_CLIENT_MODE ?? "mock") as BagsClientMode;
 
-  if (resolvedMode === "mock") {
-    return new MockBagsClient();
+  if (resolved === "mainnet-readonly") {
+    if (process.env.ENABLE_MAINNET_WRITE === "true") {
+      throw new Error(
+        "[BagsClient] ENABLE_MAINNET_WRITE=true is set but MainnetBagsClient is read-only. " +
+          "This combination is not supported. Unset ENABLE_MAINNET_WRITE or do not use mainnet-readonly mode.",
+      );
+    }
+    return new MainnetBagsClient();
   }
 
-  if (resolvedMode === "mainnet-readonly") {
-    // Phase 2: MainnetBagsClient will be implemented here
-    throw new Error(
-      "MainnetBagsClient is not yet implemented. Set BAGS_CLIENT_MODE=mock for Phase 0.",
-    );
-  }
-
-  throw new Error(`Unknown BAGS_CLIENT_MODE: "${resolvedMode}"`);
+  return new MockBagsClient();
 }

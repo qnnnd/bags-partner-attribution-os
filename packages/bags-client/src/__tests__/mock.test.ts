@@ -80,13 +80,15 @@ describe("createBagsClient factory", () => {
     expect(c).toBeInstanceOf(MockBagsClient);
   });
 
-  it("throws for unsupported mode", () => {
-    expect(() => createBagsClient("some-unsupported-mode")).toThrow();
+  it("returns MainnetBagsClient for mainnet-readonly mode (Phase 2)", async () => {
+    const { MainnetBagsClient } = await import("../mainnet");
+    const c = createBagsClient("mainnet-readonly");
+    expect(c).toBeInstanceOf(MainnetBagsClient);
   });
 
-  it("throws for mainnet-readonly (Phase 2 not yet implemented)", () => {
-    expect(() => createBagsClient("mainnet-readonly")).toThrow(
-      /not yet implemented/i,
-    );
+  it("returns MockBagsClient for any unknown/unsupported mode (safe fallback)", () => {
+    // Unknown modes default to mock for safety
+    const c = createBagsClient("some-unsupported-mode" as never);
+    expect(c).toBeInstanceOf(MockBagsClient);
   });
 });

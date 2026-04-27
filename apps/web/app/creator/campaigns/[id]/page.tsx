@@ -4,7 +4,9 @@ import { prisma } from "@bags/db";
 import { Nav } from "../../../../components/Nav";
 import { StatCard } from "../../../../components/StatCard";
 import { LeaderboardTable } from "../../../../components/LeaderboardTable";
+import { CampaignActionBar } from "../../../../components/CampaignActionBar";
 import { MOCK_CAMPAIGN, MOCK_LEADERBOARD, lamportsToSol } from "../../../../lib/mock-data";
+import { getSession } from "../../../../lib/session";
 import type { LeaderboardEntry } from "@bags/shared";
 import { AttributionType, ConversionStatus } from "@bags/shared";
 
@@ -14,6 +16,7 @@ interface PageProps {
 
 export default async function CampaignDetail({ params }: PageProps) {
   const { id } = await params;
+  const session = await getSession();
 
   // Demo campaign — use Phase 0 mock data
   if (id === MOCK_CAMPAIGN.id) {
@@ -55,12 +58,39 @@ export default async function CampaignDetail({ params }: PageProps) {
     affMap.set(row.affiliateId, e);
   }
 
+  // Latest partner fee snapshots (Phase 2: from Bags sync)
+  const feeSnaps = await prisma.partnerFeeSnapshot.findMany({
+    where: { campaignId: id, affiliateId: { not: null } },
+    orderBy: { snapshotAt: "desc" },
+    distinct: ["affiliateId"],
+  });
+  const feeSnapMap = new Map(feeSnaps.map((s) => [s.affiliateId!, s]));
+
+  // Latest attribution conversions (from recompute)
+  const convRows = await prisma.attributionConversion.findMany({
+    where: { campaignId: id },
+    orderBy: { createdAt: "desc" },
+  });
+  const convMap = new Map<string, typeof convRows[0]>();
+  for (const c of convRows) {
+    if (!convMap.has(c.affiliateId)) convMap.set(c.affiliateId, c);
+  }
+
+  // Latest token fee snapshot
+  const tokenFeeSnap = await prisma.tokenFeeSnapshot.findFirst({
+    where: { campaignId: id },
+    orderBy: { snapshotAt: "desc" },
+  });
+
   const leaderboard: LeaderboardEntry[] = campaign.affiliates.map((aff, idx) => {
     const counts = affMap.get(aff.id) ?? {};
     const clicks = counts["visit"] ?? 0;
     const wc = counts["wallet_connect"] ?? 0;
     const bi = (counts["buy_click"] ?? 0) + (counts["outbound_to_bags"] ?? 0);
-    const score = (clicks > 0 ? 20 : 0) + (wc > 0 ? 25 : 0) + (bi > 0 ? 20 : 0);
+    const fee = feeSnapMap.get(aff.id);
+    const conv = convMap.get(aff.id);
+
+    const score = conv?.confidenceScore ?? ((clicks > 0 ? 20 : 0) + (wc > 0 ? 25 : 0) + (bi > 0 ? 20 : 0));
     return {
       rank: idx + 1,
       affiliateId: aff.id,
@@ -72,10 +102,10 @@ export default async function CampaignDetail({ params }: PageProps) {
       buyIntents: bi,
       attributedConversions: bi > 0 ? 1 : 0,
       confidenceScore: score,
-      attributionType: bi > 0 ? AttributionType.WalletIntent : AttributionType.Click,
-      claimedFeesLamports: 0,
-      unclaimedFeesLamports: 0,
-      status: ConversionStatus.Candidate,
+      attributionType: (conv?.attributionType as AttributionType) ?? (bi > 0 ? AttributionType.WalletIntent : AttributionType.Click),
+      claimedFeesLamports: fee ? Number(fee.claimedFeesLamports) : 0,
+      unclaimedFeesLamports: fee ? Number(fee.unclaimedFeesLamports) : 0,
+      status: (conv?.status as ConversionStatus) ?? ConversionStatus.Candidate,
       riskLevel: null,
     };
   });
@@ -83,15 +113,26 @@ export default async function CampaignDetail({ params }: PageProps) {
   leaderboard.forEach((e, i) => { e.rank = i + 1; });
 
   const attributedCount = leaderboard.filter((e) => e.buyIntents > 0).length;
+  const totalClaimed = feeSnaps.reduce((s, f) => s + Number(f.claimedFeesLamports), 0);
+  const totalUnclaimed = feeSnaps.reduce((s, f) => s + Number(f.unclaimedFeesLamports), 0);
+  const lifetimeFees = tokenFeeSnap?.lifetimeFeesLamports ? Number(tokenFeeSnap.lifetimeFeesLamports) : 0;
 
-  return renderDetail(campaign.id, campaign.name, campaign.tokenMint, campaign.status, campaign.attributionWindowMinutes, totalClicks, totalWalletConnects, totalBuyIntents, attributedCount, 0, 0, 0, leaderboard, false);
+  const isOwner = session.walletAddress === campaign.creatorWallet;
+
+  return renderDetail(
+    campaign.id, campaign.name, campaign.tokenMint, campaign.status,
+    campaign.attributionWindowMinutes,
+    totalClicks, totalWalletConnects, totalBuyIntents, attributedCount,
+    lifetimeFees, totalClaimed, totalUnclaimed,
+    leaderboard, false, isOwner,
+  );
 }
 
 function renderDetail(
   id: string, name: string, tokenMint: string, status: string, window: number,
   totalClicks: number, walletConnects: number, buyIntents: number, attributed: number,
   lifetimeFees: number, totalClaimed: number, totalUnclaimed: number,
-  leaderboard: LeaderboardEntry[], isMock: boolean,
+  leaderboard: LeaderboardEntry[], isMock: boolean, isOwner = false,
 ) {
   return (
     <div className="flex min-h-screen flex-col">
@@ -141,9 +182,17 @@ function renderDetail(
         </div>
         <LeaderboardTable entries={leaderboard} />
 
+        {/* Phase 2: Bags sync + recompute action bar */}
+        {isOwner && !isMock && (
+          <div className="mt-6">
+            <CampaignActionBar campaignId={id} isOwner={isOwner} />
+          </div>
+        )}
+
         <div className="mt-6 rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-4">
           <p className="text-xs text-yellow-500/80">
             <strong>Attribution Notice:</strong> These are <em>confidence-based attribution candidates</em>, not 100% verified conversions.
+            Use <strong>Sync Partner Stats</strong> + <strong>Recompute Attribution</strong> to merge Bags on-chain fee data.
           </p>
         </div>
       </main>

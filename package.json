@@ -17,7 +17,8 @@
     "db:migrate": "turbo run db:migrate --filter=@bags/db",
     "db:studio": "turbo run db:studio --filter=@bags/db",
     "seed:demo": "dotenv -e .env -- tsx scripts/seed-demo.ts",
-    "e2e": "turbo run e2e --filter=@bags/web"
+    "e2e": "turbo run e2e --filter=@bags/web",
+    "script:check-mainnet-read": "tsx scripts/check-mainnet-read.ts"
   },
   "devDependencies": {
     "dotenv-cli": "^7.4.4",

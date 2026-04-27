@@ -13,7 +13,9 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@bags/shared": "workspace:*"
+    "@bags/shared": "workspace:*",
+    "@solana/web3.js": "^1.98.4",
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "vitest": "^3.1.2"
