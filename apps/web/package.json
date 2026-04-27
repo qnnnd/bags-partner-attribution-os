@@ -1,0 +1,44 @@
+{
+  "name": "@bags/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "@bags/attribution-engine": "workspace:*",
+    "@bags/bags-client": "workspace:*",
+    "@bags/db": "workspace:*",
+    "@bags/risk-engine": "workspace:*",
+    "@bags/shared": "workspace:*",
+    "@noble/ed25519": "^3.1.0",
+    "@noble/hashes": "^2.2.0",
+    "iron-session": "^8.0.4",
+    "nanoid": "^5.1.9",
+    "next": "^15.3.1",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@tailwindcss/postcss": "^4.1.5",
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@typescript-eslint/eslint-plugin": "^8.59.0",
+    "@typescript-eslint/parser": "^8.59.0",
+    "@vitejs/plugin-react": "^4.4.1",
+    "eslint": "^10.2.1",
+    "eslint-config-next": "^16.2.4",
+    "tailwindcss": "^4.1.5",
+    "typescript": "^5.7.3",
+    "vitest": "^3.1.2"
+  }
+}

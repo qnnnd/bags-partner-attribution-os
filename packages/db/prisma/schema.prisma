@@ -1,0 +1,249 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  creator
+  affiliate
+  admin
+}
+
+enum CampaignStatus {
+  draft
+  active
+  paused
+  archived
+}
+
+enum AffiliateStatus {
+  invited
+  active
+  paused
+}
+
+enum TrackingEventType {
+  visit
+  share
+  wallet_connect
+  buy_click
+  outbound_to_bags
+}
+
+enum AttributionType {
+  click
+  wallet_intent
+  onchain_candidate
+  confirmed
+}
+
+enum ConversionStatus {
+  candidate
+  confirmed
+  suspicious
+  rejected
+}
+
+enum RiskType {
+  self_buy
+  repeated_click
+  tiny_buy
+  abnormal_conversion
+  new_wallet
+  burst_activity
+  multi_wallet_pattern
+}
+
+enum RiskSeverity {
+  low
+  medium
+  high
+}
+
+enum PayoutStatus {
+  pending_review
+  approved
+  tx_created
+  paid
+  rejected
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id             String   @id @default(uuid())
+  walletAddress  String   @unique @map("wallet_address")
+  role           UserRole
+  displayName    String?  @map("display_name")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("users")
+}
+
+model WalletSession {
+  id            String   @id @default(uuid())
+  walletAddress String   @map("wallet_address")
+  nonce         String
+  signedMessage String?  @map("signed_message")
+  expiresAt     DateTime @map("expires_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("wallet_sessions")
+}
+
+model Campaign {
+  id                        String         @id @default(uuid())
+  creatorWallet             String         @map("creator_wallet")
+  tokenMint                 String         @map("token_mint")
+  name                      String
+  slug                      String         @unique
+  bagsTokenUrl              String?        @map("bags_token_url")
+  attributionWindowMinutes  Int            @default(1440) @map("attribution_window_minutes")
+  status                    CampaignStatus @default(draft)
+  createdAt                 DateTime       @default(now()) @map("created_at")
+  updatedAt                 DateTime       @updatedAt @map("updated_at")
+
+  affiliates             Affiliate[]
+  trackingEvents         TrackingEvent[]
+  attributionConversions AttributionConversion[]
+  partnerFeeSnapshots    PartnerFeeSnapshot[]
+  tokenFeeSnapshots      TokenFeeSnapshot[]
+  riskFlags              RiskFlag[]
+  payoutLedgers          PayoutLedger[]
+
+  @@map("campaigns")
+}
+
+model Affiliate {
+  id                String          @id @default(uuid())
+  campaignId        String          @map("campaign_id")
+  walletAddress     String          @map("wallet_address")
+  displayName       String          @map("display_name")
+  refCode           String          @map("ref_code")
+  partnerWallet     String?         @map("partner_wallet")
+  partnerConfigPda  String?         @map("partner_config_pda")
+  status            AffiliateStatus @default(invited)
+  createdAt         DateTime        @default(now()) @map("created_at")
+
+  campaign               Campaign               @relation(fields: [campaignId], references: [id])
+  attributionConversions AttributionConversion[]
+  partnerFeeSnapshots    PartnerFeeSnapshot[]
+  riskFlags              RiskFlag[]
+  payoutLedgers          PayoutLedger[]
+
+  @@unique([campaignId, refCode])
+  @@map("affiliates")
+}
+
+model TrackingEvent {
+  id              String            @id @default(uuid())
+  campaignId      String            @map("campaign_id")
+  affiliateId     String?           @map("affiliate_id")
+  eventType       TrackingEventType @map("event_type")
+  sessionId       String            @map("session_id")
+  walletAddress   String?           @map("wallet_address")
+  tokenMint       String            @map("token_mint")
+  refCode         String?           @map("ref_code")
+  ipHash          String?           @map("ip_hash")
+  userAgentHash   String?           @map("user_agent_hash")
+  metadata        Json              @default("{}")
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  campaign Campaign @relation(fields: [campaignId], references: [id])
+
+  @@map("tracking_events")
+}
+
+model AttributionConversion {
+  id                       String          @id @default(uuid())
+  campaignId               String          @map("campaign_id")
+  affiliateId              String          @map("affiliate_id")
+  buyerWallet              String?         @map("buyer_wallet")
+  tokenMint                String          @map("token_mint")
+  txSignature              String?         @map("tx_signature")
+  attributionType          AttributionType @map("attribution_type")
+  confidenceScore          Int             @map("confidence_score")
+  attributedVolumeLamports BigInt?         @map("attributed_volume_lamports")
+  status                   ConversionStatus @default(candidate)
+  reason                   String
+  createdAt                DateTime        @default(now()) @map("created_at")
+
+  campaign  Campaign   @relation(fields: [campaignId], references: [id])
+  affiliate Affiliate  @relation(fields: [affiliateId], references: [id])
+  riskFlags RiskFlag[]
+
+  @@map("attribution_conversions")
+}
+
+model PartnerFeeSnapshot {
+  id                     String   @id @default(uuid())
+  campaignId             String?  @map("campaign_id")
+  affiliateId            String?  @map("affiliate_id")
+  partnerWallet          String   @map("partner_wallet")
+  partnerConfigPda       String?  @map("partner_config_pda")
+  claimedFeesLamports    BigInt   @default(0) @map("claimed_fees_lamports")
+  unclaimedFeesLamports  BigInt   @default(0) @map("unclaimed_fees_lamports")
+  raw                    Json     @default("{}")
+  snapshotAt             DateTime @default(now()) @map("snapshot_at")
+
+  campaign  Campaign?  @relation(fields: [campaignId], references: [id])
+  affiliate Affiliate? @relation(fields: [affiliateId], references: [id])
+
+  @@map("partner_fee_snapshots")
+}
+
+model TokenFeeSnapshot {
+  id                   String   @id @default(uuid())
+  campaignId           String?  @map("campaign_id")
+  tokenMint            String   @map("token_mint")
+  lifetimeFeesLamports BigInt?  @map("lifetime_fees_lamports")
+  raw                  Json     @default("{}")
+  snapshotAt           DateTime @default(now()) @map("snapshot_at")
+
+  campaign Campaign? @relation(fields: [campaignId], references: [id])
+
+  @@map("token_fee_snapshots")
+}
+
+model RiskFlag {
+  id            String       @id @default(uuid())
+  campaignId    String       @map("campaign_id")
+  affiliateId   String?      @map("affiliate_id")
+  conversionId  String?      @map("conversion_id")
+  riskType      RiskType     @map("risk_type")
+  severity      RiskSeverity
+  scoreDelta    Int          @map("score_delta")
+  reason        String
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  campaign   Campaign              @relation(fields: [campaignId], references: [id])
+  affiliate  Affiliate?            @relation(fields: [affiliateId], references: [id])
+  conversion AttributionConversion? @relation(fields: [conversionId], references: [id])
+
+  @@map("risk_flags")
+}
+
+model PayoutLedger {
+  id                      String       @id @default(uuid())
+  campaignId              String       @map("campaign_id")
+  affiliateId             String       @map("affiliate_id")
+  currency                String       @default("SOL")
+  suggestedAmountLamports BigInt       @map("suggested_amount_lamports")
+  approvedAmountLamports  BigInt?      @map("approved_amount_lamports")
+  status                  PayoutStatus @default(pending_review)
+  txSignature             String?      @map("tx_signature")
+  createdAt               DateTime     @default(now()) @map("created_at")
+  updatedAt               DateTime     @updatedAt @map("updated_at")
+
+  campaign  Campaign  @relation(fields: [campaignId], references: [id])
+  affiliate Affiliate @relation(fields: [affiliateId], references: [id])
+
+  @@map("payout_ledgers")
+}
