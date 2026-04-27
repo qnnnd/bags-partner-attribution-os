@@ -236,6 +236,7 @@ describe("applyLastTouch", () => {
     affiliateId: string,
     buyerWallet: string,
     confidenceScore: number,
+    lastSignalAt?: Date,
   ): AttributionResult => ({
     campaignId: "campaign-1",
     affiliateId,
@@ -257,6 +258,7 @@ describe("applyLastTouch", () => {
     status: ConversionStatus.Candidate,
     reason: "test",
     isLastTouch: false,
+    lastSignalAt,
   });
 
   it("marks single result as last touch", () => {
@@ -264,7 +266,7 @@ describe("applyLastTouch", () => {
     expect(results[0]!.isLastTouch).toBe(true);
   });
 
-  it("only highest-confidence result gets last-touch for same buyer", () => {
+  it("only highest-confidence result gets last-touch for same buyer (no timestamps)", () => {
     const results = applyLastTouch([
       makeResult("aff-1", "buyer-1", 60),
       makeResult("aff-2", "buyer-1", 85),
@@ -282,5 +284,65 @@ describe("applyLastTouch", () => {
     ]);
     const lastTouchResults = results.filter((r) => r.isLastTouch);
     expect(lastTouchResults).toHaveLength(2);
+  });
+
+  // ── Timestamp-based last-touch ordering ────────────────────────────────────
+
+  it("selects affiliate with later lastSignalAt even if confidence is lower", () => {
+    const earlier = new Date("2026-04-27T10:00:00Z");
+    const later = new Date("2026-04-27T11:00:00Z");
+    // aff-1 clicked earlier with higher score; aff-2 clicked later with lower score
+    const results = applyLastTouch([
+      makeResult("aff-1", "buyer-1", 85, earlier),
+      makeResult("aff-2", "buyer-1", 60, later),
+    ]);
+    const lastTouch = results.find((r) => r.isLastTouch)!;
+    expect(lastTouch.affiliateId).toBe("aff-2");
+    expect(results.find((r) => r.affiliateId === "aff-1")!.isLastTouch).toBe(false);
+  });
+
+  it("same session: A clicked first, B clicked later — B wins (last-touch)", () => {
+    const tA = new Date("2026-04-27T08:00:00Z");
+    const tB = new Date("2026-04-27T09:30:00Z");
+    const results = applyLastTouch([
+      makeResult("aff-A", "buyer-1", 65, tA),
+      makeResult("aff-B", "buyer-1", 65, tB),
+    ]);
+    const lastTouch = results.find((r) => r.isLastTouch)!;
+    expect(lastTouch.affiliateId).toBe("aff-B");
+  });
+
+  it("same wallet: connected to A first, then connected to B — B wins", () => {
+    const tA = new Date("2026-04-27T12:00:00Z");
+    const tB = new Date("2026-04-27T12:30:00Z");
+    const results = applyLastTouch([
+      makeResult("aff-A", "wallet-W", 80, tA),
+      makeResult("aff-B", "wallet-W", 80, tB),
+    ]);
+    const lastTouch = results.find((r) => r.isLastTouch)!;
+    expect(lastTouch.affiliateId).toBe("aff-B");
+  });
+
+  it("A has click but B has wallet intent (later timestamp) — B wins", () => {
+    const tA = new Date("2026-04-27T10:00:00Z");
+    const tB = new Date("2026-04-27T10:05:00Z");
+    const results = applyLastTouch([
+      makeResult("aff-A", "wallet-W", 20, tA),  // click only
+      makeResult("aff-B", "wallet-W", 65, tB),  // wallet intent, later
+    ]);
+    const lastTouch = results.find((r) => r.isLastTouch)!;
+    expect(lastTouch.affiliateId).toBe("aff-B");
+    expect(results.find((r) => r.affiliateId === "aff-A")!.isLastTouch).toBe(false);
+  });
+
+  it("non-last-touch affiliate has isLastTouch=false", () => {
+    const tA = new Date("2026-04-27T10:00:00Z");
+    const tB = new Date("2026-04-27T11:00:00Z");
+    const results = applyLastTouch([
+      makeResult("aff-A", "buyer-1", 70, tA),
+      makeResult("aff-B", "buyer-1", 70, tB),
+    ]);
+    expect(results.find((r) => r.affiliateId === "aff-A")!.isLastTouch).toBe(false);
+    expect(results.find((r) => r.affiliateId === "aff-B")!.isLastTouch).toBe(true);
   });
 });

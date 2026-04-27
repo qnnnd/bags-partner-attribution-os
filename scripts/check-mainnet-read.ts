@@ -82,6 +82,7 @@ async function main(): Promise<void> {
     if (typeof result.lifetimeFeesLamports !== "bigint") throw new Error("lifetimeFeesLamports is not BigInt");
     if (result.lifetimeFeesLamports < BigInt(0)) throw new Error("Negative fees");
     console.log(`     lifetimeFeesLamports = ${result.lifetimeFeesLamports} (${Number(result.lifetimeFeesLamports) / 1e9} SOL)`);
+    console.log(`     source = ${String(result.raw?.source ?? "unknown")}`);
   });
 
   await check("getTokenClaimEvents returns array", async () => {
@@ -114,6 +115,7 @@ async function main(): Promise<void> {
     console.log(`     claimed = ${Number(stats.claimedFeesLamports) / 1e9} SOL`);
     console.log(`     unclaimed = ${Number(stats.unclaimedFeesLamports) / 1e9} SOL`);
     console.log(`     partnerConfigPda = ${stats.partnerConfigPda ?? "none"}`);
+    console.log(`     source = ${String(stats.raw?.source ?? "unknown")}`);
   });
 
   await check("getWalletTokenActivity returns array (Phase 3)", async () => {

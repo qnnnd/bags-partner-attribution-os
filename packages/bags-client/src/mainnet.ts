@@ -67,11 +67,18 @@ async function bagsRequest<T>(
 export class MainnetBagsClient implements BagsClient {
   /**
    * Query token lifetime fees from Bags API.
-   * Endpoint: GET /v1/tokens/:mint/fees
+   *
+   * NOTE: The endpoint path `/v1/tokens/:mint/fees` is an adapter placeholder
+   * modelled on Bags SDK conventions. It should be verified against the
+   * official Bags REST API documentation before production use.
    */
   async getTokenLifetimeFees(tokenMint: string): Promise<TokenFeeStats> {
     if (USE_FIXTURE_FALLBACK) {
-      return { ...DEMO_FIXTURE_TOKEN_FEES, tokenMint };
+      return {
+        ...DEMO_FIXTURE_TOKEN_FEES,
+        tokenMint,
+        raw: { ...DEMO_FIXTURE_TOKEN_FEES.raw, source: "fixture_fallback" },
+      };
     }
     try {
       type ApiResponse = {
@@ -85,17 +92,23 @@ export class MainnetBagsClient implements BagsClient {
         tokenMint: data.tokenMint ?? tokenMint,
         lifetimeFeesLamports: BigInt(data.lifetimeFeesLamports ?? "0"),
         lastUpdatedAt: new Date(data.updatedAt ?? Date.now()),
-        raw: data.raw ?? (data as Record<string, unknown>),
+        raw: { ...(data.raw ?? (data as Record<string, unknown>)), source: "real_mainnet" },
       };
     } catch (err) {
       console.warn(`[MainnetBagsClient] getTokenLifetimeFees fallback for ${tokenMint}:`, err);
-      return { ...DEMO_FIXTURE_TOKEN_FEES, tokenMint };
+      return {
+        ...DEMO_FIXTURE_TOKEN_FEES,
+        tokenMint,
+        raw: { ...DEMO_FIXTURE_TOKEN_FEES.raw, source: "fixture_fallback" },
+      };
     }
   }
 
   /**
    * Query token claim events from Bags API.
-   * Endpoint: GET /v1/tokens/:mint/claim-events
+   *
+   * NOTE: The endpoint path `/v1/tokens/:mint/claim-events` is an adapter
+   * placeholder. Verify against official Bags API docs before production use.
    */
   async getTokenClaimEvents(tokenMint: string): Promise<TokenClaimEvent[]> {
     if (USE_FIXTURE_FALLBACK) {
@@ -124,7 +137,9 @@ export class MainnetBagsClient implements BagsClient {
 
   /**
    * Query partner config (PDA) for a given wallet from Bags API.
-   * Endpoint: GET /v1/partners/:wallet/config
+   *
+   * NOTE: The endpoint path `/v1/partners/:wallet/config` is an adapter
+   * placeholder. Verify against official Bags API docs before production use.
    */
   async getPartnerConfig(partnerWallet: string): Promise<PartnerConfig | null> {
     if (USE_FIXTURE_FALLBACK) {
@@ -233,11 +248,14 @@ export class MainnetBagsClient implements BagsClient {
 
   /**
    * Query claimed and unclaimed partner fees from Bags API.
-   * Endpoint: GET /v1/partners/:wallet/stats
+   *
+   * NOTE: The endpoint path `/v1/partners/:wallet/stats` is an adapter
+   * placeholder. Verify against official Bags API docs before production use.
    */
   async getPartnerClaimStats(partnerWallet: string): Promise<PartnerClaimStats> {
     if (USE_FIXTURE_FALLBACK) {
-      return DEMO_FIXTURE_PARTNER_STATS[partnerWallet] ?? makeEmptyPartnerStats(partnerWallet);
+      const fixture = DEMO_FIXTURE_PARTNER_STATS[partnerWallet] ?? makeEmptyPartnerStats(partnerWallet);
+      return { ...fixture, raw: { ...fixture.raw, source: "fixture_fallback" } };
     }
     try {
       type ApiStats = {
@@ -255,13 +273,12 @@ export class MainnetBagsClient implements BagsClient {
         claimedFeesLamports: BigInt(data.claimedFeesLamports ?? "0"),
         unclaimedFeesLamports: BigInt(data.unclaimedFeesLamports ?? "0"),
         lastClaimedAt: data.lastClaimedAt ? new Date(data.lastClaimedAt) : null,
-        raw: data.raw ?? (data as Record<string, unknown>),
+        raw: { ...(data.raw ?? (data as Record<string, unknown>)), source: "real_mainnet" },
       };
     } catch (err) {
       console.warn(`[MainnetBagsClient] getPartnerClaimStats fallback for ${partnerWallet}:`, err);
-      return (
-        DEMO_FIXTURE_PARTNER_STATS[partnerWallet] ?? makeEmptyPartnerStats(partnerWallet)
-      );
+      const fixture = DEMO_FIXTURE_PARTNER_STATS[partnerWallet] ?? makeEmptyPartnerStats(partnerWallet);
+      return { ...fixture, raw: { ...fixture.raw, source: "fixture_fallback" } };
     }
   }
 }

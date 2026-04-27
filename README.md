@@ -156,11 +156,13 @@ pnpm e2e         # Playwright end-to-end tests
 |---|---|---|
 | 0 | Monorepo, Prisma, MockBagsClient, seed demo, basic dashboard | ✅ |
 | 1 | Wallet login (Phantom), campaigns, affiliates, ref links, tracking events | ✅ |
-| 2 | MainnetBagsClient, token fees, partner config snapshots, leaderboard, CSV | ✅ |
-| 3 | On-chain buy candidates, attribution window, risk engine, risk review page | ✅ |
-| 4 | Payout ledger, creator approval, manual tx signature, partner claim status | ✅ |
+| 2 | MainnetBagsClient, token fees, partner config snapshots, leaderboard, CSV | mostly complete — Bags REST API endpoints are adapter placeholders pending official API docs verification; owner-check fix applied |
+| 3 | On-chain buy candidates, attribution window, risk engine, risk review page | mostly complete — single-affiliate scoring ✅; cross-affiliate last-touch dedup fix applied |
+| 4 | Payout ledger, creator approval, manual tx signature, partner claim status | mostly complete — manual payout workflow ✅; no automatic payout |
 | 5 | On-chain claim execution (manual wallet-signed) | 🔜 |
 | 6 | Automated monitoring, alerts, advanced analytics | 🔜 |
+
+> **Phase 2–4 notes:** Phases 2–4 are functionally implemented for hackathon demo. Remaining gaps: (1) Bags REST API endpoints require verification against official Bags API documentation; fixture fallback is labelled `fixture_fallback` in `raw.source`. (2) Attribution results are confidence-based candidates only — not 100% verified conversions. (3) All payouts require manual creator approval and off-platform execution.
 
 ---
 

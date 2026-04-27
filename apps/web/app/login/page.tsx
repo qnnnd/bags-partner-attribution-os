@@ -37,7 +37,10 @@ export default function LoginPage() {
       // Step 3: Sign the message — no transaction, no SOL spent
       const msgBytes = new TextEncoder().encode(message);
       const { signature } = await window.solana.signMessage(msgBytes, "utf8");
-      const sigBase64 = Buffer.from(signature).toString("base64");
+      // Use browser-safe base64 encoding — Buffer is Node-only and unavailable here.
+      const sigBase64 = btoa(
+        Array.from(signature as Uint8Array, (b) => String.fromCharCode(b)).join(""),
+      );
 
       // Step 4: Verify signature server-side
       const verifyRes = await fetch("/api/auth/verify-signature", {

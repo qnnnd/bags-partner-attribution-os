@@ -9,11 +9,14 @@
  *   - burst_activity (distinct wallets) and missing_wallet risk inputs
  *   - sameIpUaClickCount computed from real IP+UA hash data
  *   - Stale risk flags cleared before recompute to prevent accumulation
+ *   - Two-pass last-touch: signals built with real lastSeenAt per affiliate,
+ *     applyLastTouch called across all results, non-last-touch affiliates
+ *     excluded from attributionConversion upsert.
  */
 import { prisma } from "@bags/db";
-import { computeAttribution } from "@bags/attribution-engine";
+import { computeAttribution, applyLastTouch } from "@bags/attribution-engine";
 import { evaluateRisk } from "@bags/risk-engine";
-import type { AttributionInput, TrackingSignal } from "@bags/attribution-engine";
+import type { AttributionInput, AttributionResult, TrackingSignal } from "@bags/attribution-engine";
 import type { RiskInput } from "@bags/risk-engine";
 import type { LeaderboardEntry } from "@bags/shared";
 import {
@@ -145,7 +148,47 @@ export async function recomputeAttribution(
     }
   }
 
-  const entries: AggregatedLeaderboardEntry[] = [];
+  // ── Latest intent event timestamp per affiliate (for last-touch ordering) ─
+  // Query MAX(createdAt) for intent events per affiliate so applyLastTouch can
+  // correctly select the affiliate whose most-recent signal is newest.
+  const latestIntentRows = await prisma.trackingEvent.findMany({
+    where: {
+      campaignId,
+      affiliateId: { not: null },
+      eventType: { in: ["wallet_connect", "buy_click", "outbound_to_bags"] },
+      createdAt: { gte: windowStart },
+    },
+    orderBy: { createdAt: "desc" },
+    distinct: ["affiliateId"],
+    select: { affiliateId: true, createdAt: true },
+  });
+  const latestIntentMap = new Map(
+    latestIntentRows.map((r) => [r.affiliateId!, r.createdAt]),
+  );
+
+  // ── Intermediate type carrying per-affiliate scoring context ──────────────
+  type AffiliateContext = {
+    aff: (typeof affiliates)[number];
+    counts: Record<string, number>;
+    clicks: number;
+    walletConnects: number;
+    buyIntents: number;
+    buyerWallet: string | undefined;
+    feeSnap: (typeof feeSnaps)[number] | undefined;
+    burstWalletCount: number;
+    sameIpUaClickCount: number;
+    onchainTxSignature: string | undefined;
+    onchainBuyAt: Date | undefined;
+    solscanLink: string | undefined;
+    attributionResult: AttributionResult;
+    finalScore: number;
+    status: ConversionStatus;
+    riskResult: ReturnType<typeof evaluateRisk>;
+  };
+
+  // ── Pass 1: compute attribution for each affiliate ────────────────────────
+  const affiliateContexts: AffiliateContext[] = [];
+  const allAttributionResults: AttributionResult[] = [];
 
   for (const aff of affiliates) {
     const counts = eventMap.get(aff.id) ?? {};
@@ -180,6 +223,10 @@ export async function recomputeAttribution(
       }
     }
 
+    // Use the actual latest intent event timestamp so applyLastTouch can
+    // correctly identify which affiliate had the most recent touch.
+    const latestIntentAt = latestIntentMap.get(aff.id);
+
     // ── Attribution scoring ──────────────────────────────────────────────────
     const signal: TrackingSignal = {
       sessionId: `agg-${aff.id}`,
@@ -191,7 +238,7 @@ export async function recomputeAttribution(
       hasOnchainCandidate: onchainTxSignature != null,
       visitCount: clicks,
       firstSeenAt: windowStart,
-      lastSeenAt: new Date(),
+      lastSeenAt: latestIntentAt ?? windowStart,
     };
 
     const attributionInput: AttributionInput = {
@@ -237,43 +284,87 @@ export async function recomputeAttribution(
           ? ConversionStatus.Confirmed
           : ConversionStatus.Candidate;
 
+    allAttributionResults.push(attributionResult);
+    affiliateContexts.push({
+      aff,
+      counts,
+      clicks,
+      walletConnects,
+      buyIntents,
+      buyerWallet,
+      feeSnap,
+      burstWalletCount,
+      sameIpUaClickCount,
+      onchainTxSignature,
+      onchainBuyAt,
+      solscanLink,
+      attributionResult,
+      finalScore,
+      status,
+      riskResult,
+    });
+  }
+
+  // ── Pass 2: apply cross-affiliate last-touch dedup ────────────────────────
+  // applyLastTouch groups by buyerWallet and marks only the most recent touch.
+  // Non-last-touch affiliates do not get a confirmed/candidate conversion.
+  const dedupedResults = applyLastTouch(allAttributionResults);
+  const isLastTouchById = new Map(
+    dedupedResults.map((r) => [r.affiliateId, r.isLastTouch]),
+  );
+
+  const entries: AggregatedLeaderboardEntry[] = [];
+
+  for (const ctx of affiliateContexts) {
+    const { aff, clicks, walletConnects, buyIntents, buyerWallet, feeSnap,
+            onchainTxSignature, solscanLink, attributionResult,
+            finalScore, status, riskResult } = ctx;
+
+    const isLastTouch = isLastTouchById.get(aff.id) ?? true;
     const attributedVolume = feeSnap
       ? feeSnap.claimedFeesLamports + feeSnap.unclaimedFeesLamports
       : BigInt(0);
 
-    // ── Upsert attribution_conversion ────────────────────────────────────────
-    const existingConversion = await prisma.attributionConversion.findFirst({
-      where: { campaignId, affiliateId: aff.id },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (existingConversion) {
-      await prisma.attributionConversion.update({
-        where: { id: existingConversion.id },
-        data: {
-          attributionType: attributionResult.attributionType as never,
-          confidenceScore: finalScore,
-          status: status as never,
-          reason: attributionResult.reason,
-          attributedVolumeLamports: attributedVolume,
-          ...(onchainTxSignature ? { txSignature: onchainTxSignature } : {}),
-          buyerWallet: buyerWallet ?? existingConversion.buyerWallet,
-        },
+    // ── Upsert attribution_conversion (last-touch affiliates only) ───────────
+    if (isLastTouch) {
+      const existingConversion = await prisma.attributionConversion.findFirst({
+        where: { campaignId, affiliateId: aff.id },
+        orderBy: { createdAt: "desc" },
       });
-    } else if (buyIntents > 0 || walletConnects > 0) {
-      await prisma.attributionConversion.create({
-        data: {
-          campaignId,
-          affiliateId: aff.id,
-          buyerWallet: buyerWallet ?? null,
-          tokenMint: campaign.tokenMint,
-          txSignature: onchainTxSignature ?? null,
-          attributionType: attributionResult.attributionType as never,
-          confidenceScore: finalScore,
-          attributedVolumeLamports: attributedVolume,
-          status: status as never,
-          reason: attributionResult.reason,
-        },
+
+      if (existingConversion) {
+        await prisma.attributionConversion.update({
+          where: { id: existingConversion.id },
+          data: {
+            attributionType: attributionResult.attributionType as never,
+            confidenceScore: finalScore,
+            status: status as never,
+            reason: attributionResult.reason,
+            attributedVolumeLamports: attributedVolume,
+            ...(onchainTxSignature ? { txSignature: onchainTxSignature } : {}),
+            buyerWallet: buyerWallet ?? existingConversion.buyerWallet,
+          },
+        });
+      } else if (buyIntents > 0 || walletConnects > 0) {
+        await prisma.attributionConversion.create({
+          data: {
+            campaignId,
+            affiliateId: aff.id,
+            buyerWallet: buyerWallet ?? null,
+            tokenMint: campaign.tokenMint,
+            txSignature: onchainTxSignature ?? null,
+            attributionType: attributionResult.attributionType as never,
+            confidenceScore: finalScore,
+            attributedVolumeLamports: attributedVolume,
+            status: status as never,
+            reason: attributionResult.reason,
+          },
+        });
+      }
+    } else {
+      // Non-last-touch: remove any existing conversion so it doesn't linger
+      await prisma.attributionConversion.deleteMany({
+        where: { campaignId, affiliateId: aff.id },
       });
     }
 
@@ -300,14 +391,16 @@ export async function recomputeAttribution(
       clicks,
       walletConnects,
       buyIntents,
-      attributedConversions: buyIntents > 0 ? 1 : 0,
+      attributedConversions: isLastTouch && buyIntents > 0 ? 1 : 0,
       confidenceScore: finalScore,
       attributionType: attributionResult.attributionType as AttributionType,
       claimedFeesLamports: feeSnap ? Number(feeSnap.claimedFeesLamports) : 0,
       unclaimedFeesLamports: feeSnap ? Number(feeSnap.unclaimedFeesLamports) : 0,
-      status,
+      status: isLastTouch ? status : ConversionStatus.Candidate,
       riskLevel: (riskResult.riskLevel as RiskSeverity) ?? null,
-      reason: attributionResult.reason,
+      reason: isLastTouch
+        ? attributionResult.reason
+        : `${attributionResult.reason} [non-last-touch: superseded by later affiliate touch]`,
       solscanLink: solscanLink ?? undefined,
       txSignature: onchainTxSignature,
       partnerConfigPda: aff.partnerConfigPda ?? null,
