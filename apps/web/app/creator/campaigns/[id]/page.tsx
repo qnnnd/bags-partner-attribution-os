@@ -107,6 +107,7 @@ export default async function CampaignDetail({ params }: PageProps) {
       unclaimedFeesLamports: fee ? Number(fee.unclaimedFeesLamports) : 0,
       status: (conv?.status as ConversionStatus) ?? ConversionStatus.Candidate,
       riskLevel: null,
+      isLastTouch: !!conv,
     };
   });
   leaderboard.sort((a, b) => b.confidenceScore - a.confidenceScore);

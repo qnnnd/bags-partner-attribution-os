@@ -1,22 +1,22 @@
 /**
- * Attribution Aggregator — Phase 3
+ * Attribution Aggregator — Phase 3 (last-touch fix)
  *
- * Phase 2: Merges on-chain Bags fee data with local tracking events.
- * Phase 3 additions:
- *   - Attribution window enforcement (filter events by createdAt)
- *   - On-chain buy candidate detection via BagsClient.getWalletTokenActivity
- *   - tx_signature + solscanLink saved to AttributionConversion
- *   - burst_activity (distinct wallets) and missing_wallet risk inputs
- *   - sameIpUaClickCount computed from real IP+UA hash data
- *   - Stale risk flags cleared before recompute to prevent accumulation
- *   - Two-pass last-touch: signals built with real lastSeenAt per affiliate,
- *     applyLastTouch called across all results, non-last-touch affiliates
- *     excluded from attributionConversion upsert.
+ * Implements §9.3 last-touch rules from the technical plan:
+ *   1. Same session, multiple KOL clicks → attribute to the LAST click.
+ *   2. Same wallet, multiple affiliates in window → attribute to the most recent
+ *      wallet intent (wallet_connect / buy_click / outbound_to_bags).
+ *   3. High-risk conversions do not enter suggested payout.
+ *
+ * Key change vs previous design:
+ *   - All tracking events in the attribution window are loaded once.
+ *   - Session-level and wallet-level last-touch maps are built cross-affiliate.
+ *   - Only the winning affiliate per journey gets an attributionConversion record.
+ *   - Non-winners' stale conversions are deleted so they cannot receive payout.
  */
 import { prisma } from "@bags/db";
-import { computeAttribution, applyLastTouch } from "@bags/attribution-engine";
+import { computeAttribution } from "@bags/attribution-engine";
 import { evaluateRisk } from "@bags/risk-engine";
-import type { AttributionInput, AttributionResult, TrackingSignal } from "@bags/attribution-engine";
+import type { AttributionInput, TrackingSignal } from "@bags/attribution-engine";
 import type { RiskInput } from "@bags/risk-engine";
 import type { LeaderboardEntry } from "@bags/shared";
 import {
@@ -35,11 +35,91 @@ export interface AggregatedLeaderboardEntry extends LeaderboardEntry {
   latestSnapshotAt: string | null;
 }
 
+// Intent event types — stronger signal than a plain visit/click
+const INTENT_TYPES = new Set(["wallet_connect", "buy_click", "outbound_to_bags"]);
+
+/**
+ * Resolves §9.3 last-touch winners from a flat list of tracking events.
+ *
+ * Returns the set of affiliateIds that are last-touch winners:
+ *  - Wallet-intent winners: for each wallet, the affiliate with the most recent
+ *    wallet_connect / buy_click / outbound_to_bags event.
+ *  - Session-click winners: for sessions that had NO wallet connection, the
+ *    affiliate with the most recent event in that session (intent > click).
+ *
+ * Exported for unit testing.
+ */
+export function resolveLastTouchWinners(
+  events: Array<{
+    sessionId: string;
+    affiliateId: string | null;
+    eventType: string;
+    walletAddress: string | null;
+    createdAt: Date;
+  }>,
+): Set<string> {
+  // Session last-touch: intent > click; later beats earlier
+  const sessionLastTouch = new Map<
+    string,
+    { affiliateId: string; isIntent: boolean; at: Date }
+  >();
+  for (const ev of events) {
+    if (!ev.affiliateId) continue;
+    const isIntent = INTENT_TYPES.has(ev.eventType);
+    const existing = sessionLastTouch.get(ev.sessionId);
+    if (
+      !existing ||
+      (isIntent && !existing.isIntent) ||
+      (isIntent === existing.isIntent && ev.createdAt >= existing.at)
+    ) {
+      sessionLastTouch.set(ev.sessionId, {
+        affiliateId: ev.affiliateId,
+        isIntent,
+        at: ev.createdAt,
+      });
+    }
+  }
+
+  // Wallet last-touch: most recent wallet intent affiliate per wallet
+  const walletLastTouch = new Map<string, string>(); // walletAddress → affiliateId
+  for (const ev of events) {
+    if (!ev.affiliateId || !ev.walletAddress || !INTENT_TYPES.has(ev.eventType)) continue;
+    // Events are sorted asc by createdAt, so later assignments override correctly
+    walletLastTouch.set(ev.walletAddress, ev.affiliateId);
+  }
+
+  // Sessions that had at least one wallet connection
+  const sessionsWithWallet = new Set<string>();
+  for (const ev of events) {
+    if (ev.walletAddress) sessionsWithWallet.add(ev.sessionId);
+  }
+
+  const winners = new Set<string>();
+
+  // Wallet-intent winners (highest priority — covers §9.3 rule 2)
+  for (const affiliateId of walletLastTouch.values()) {
+    winners.add(affiliateId);
+  }
+
+  // Session-click winners only for sessions without any wallet (§9.3 rule 1)
+  for (const [sessionId, { affiliateId }] of sessionLastTouch.entries()) {
+    if (!sessionsWithWallet.has(sessionId)) {
+      winners.add(affiliateId);
+    }
+  }
+
+  return winners;
+}
+
 /**
  * Full attribution recompute for a campaign.
- * Enforces attribution window, detects on-chain buy candidates, evaluates risk.
  *
- * Clears stale risk flags before writing new ones to prevent accumulation.
+ * - Enforces attribution window
+ * - Applies §9.3 last-touch across all sessions and wallets
+ * - Deletes conversions for affiliates outcompeted in the current window
+ * - Detects on-chain buy candidates
+ * - Evaluates risk
+ * - Clears stale risk flags before recomputing
  */
 export async function recomputeAttribution(
   campaignId: string,
@@ -54,27 +134,44 @@ export async function recomputeAttribution(
   const windowMinutes = campaign.attributionWindowMinutes;
   const windowStart = new Date(Date.now() - windowMinutes * 60 * 1000);
 
-  // ── Fix 7: Clear stale risk flags before recomputing to prevent accumulation ─
+  // Clear stale risk flags before recomputing to prevent accumulation
   await prisma.riskFlag.deleteMany({ where: { campaignId } });
 
   const bagsClient = createBagsClient();
 
-  // ── Event aggregation (within attribution window) ──────────────────────────
-  const eventRows = await prisma.trackingEvent.groupBy({
-    by: ["affiliateId", "eventType"],
+  // ── Load ALL tracking events in the attribution window (once, cross-affiliate) ─
+  const allWindowEvents = await prisma.trackingEvent.findMany({
     where: {
       campaignId,
       affiliateId: { not: null },
       createdAt: { gte: windowStart },
     },
-    _count: { _all: true },
+    orderBy: { createdAt: "asc" }, // asc so later events override in last-touch maps
+    select: {
+      sessionId: true,
+      affiliateId: true,
+      eventType: true,
+      walletAddress: true,
+      createdAt: true,
+    },
   });
+
+  // ── §9.3 Last-touch resolution ─────────────────────────────────────────────
+  const lastTouchWinnerIds = resolveLastTouchWinners(allWindowEvents);
+
+  // Affiliates that have events in this window (used to scope conversion cleanup)
+  const affiliatesWithCurrentEvents = new Set<string>();
+  for (const ev of allWindowEvents) {
+    if (ev.affiliateId) affiliatesWithCurrentEvents.add(ev.affiliateId);
+  }
+
+  // ── Per-affiliate event counts (for metrics, independent of last-touch) ────
   const eventMap = new Map<string, Record<string, number>>();
-  for (const row of eventRows) {
-    if (!row.affiliateId) continue;
-    const e = eventMap.get(row.affiliateId) ?? {};
-    e[row.eventType] = row._count._all;
-    eventMap.set(row.affiliateId, e);
+  for (const ev of allWindowEvents) {
+    if (!ev.affiliateId) continue;
+    const e = eventMap.get(ev.affiliateId) ?? {};
+    e[ev.eventType] = (e[ev.eventType] ?? 0) + 1;
+    eventMap.set(ev.affiliateId, e);
   }
 
   // ── Latest partner fee snapshot per affiliate ──────────────────────────────
@@ -85,7 +182,7 @@ export async function recomputeAttribution(
   });
   const feeMap = new Map(feeSnaps.map((s) => [s.affiliateId!, s]));
 
-  // ── Fix 4: Burst-activity — count DISTINCT wallets per affiliate in burst window ──
+  // ── Burst-activity: distinct wallets per affiliate in burst window ──────────
   const burstWindowStart = new Date(Date.now() - BURST_WINDOW_MINUTES * 60 * 1000);
   const burstEvents = await prisma.trackingEvent.findMany({
     where: {
@@ -104,7 +201,7 @@ export async function recomputeAttribution(
     burstWalletSets.set(ev.affiliateId, wallets);
   }
 
-  // ── Fix 3: sameIpUaClickCount — max visits from one IP+UA pair per affiliate ──
+  // ── sameIpUaClickCount: max visits from one IP+UA pair per affiliate in window ─
   const ipUaWindowStart = new Date(Date.now() - REPEATED_CLICK_WINDOW_MINUTES * 60 * 1000);
   const ipUaEvents = await prisma.trackingEvent.findMany({
     where: {
@@ -117,8 +214,8 @@ export async function recomputeAttribution(
     },
     select: { affiliateId: true, ipHash: true, userAgentHash: true },
   });
-  const ipUaCountPerKey = new Map<string, number>(); // "affiliateId:ipHash:uaHash" → count
-  const sameIpUaMap = new Map<string, number>();      // affiliateId → max count
+  const ipUaCountPerKey = new Map<string, number>();
+  const sameIpUaMap = new Map<string, number>();
   for (const ev of ipUaEvents) {
     if (!ev.affiliateId || !ev.ipHash || !ev.userAgentHash) continue;
     const key = `${ev.affiliateId}:${ev.ipHash}:${ev.userAgentHash}`;
@@ -128,7 +225,7 @@ export async function recomputeAttribution(
     if (count > cur) sameIpUaMap.set(ev.affiliateId, count);
   }
 
-  // ── Build buyer wallet map: affiliate → most recent connected wallet ───────
+  // ── Buyer wallet: most recent wallet_connect per affiliate in window ────────
   const walletRows = await prisma.trackingEvent.findMany({
     where: {
       campaignId,
@@ -148,47 +245,7 @@ export async function recomputeAttribution(
     }
   }
 
-  // ── Latest intent event timestamp per affiliate (for last-touch ordering) ─
-  // Query MAX(createdAt) for intent events per affiliate so applyLastTouch can
-  // correctly select the affiliate whose most-recent signal is newest.
-  const latestIntentRows = await prisma.trackingEvent.findMany({
-    where: {
-      campaignId,
-      affiliateId: { not: null },
-      eventType: { in: ["wallet_connect", "buy_click", "outbound_to_bags"] },
-      createdAt: { gte: windowStart },
-    },
-    orderBy: { createdAt: "desc" },
-    distinct: ["affiliateId"],
-    select: { affiliateId: true, createdAt: true },
-  });
-  const latestIntentMap = new Map(
-    latestIntentRows.map((r) => [r.affiliateId!, r.createdAt]),
-  );
-
-  // ── Intermediate type carrying per-affiliate scoring context ──────────────
-  type AffiliateContext = {
-    aff: (typeof affiliates)[number];
-    counts: Record<string, number>;
-    clicks: number;
-    walletConnects: number;
-    buyIntents: number;
-    buyerWallet: string | undefined;
-    feeSnap: (typeof feeSnaps)[number] | undefined;
-    burstWalletCount: number;
-    sameIpUaClickCount: number;
-    onchainTxSignature: string | undefined;
-    onchainBuyAt: Date | undefined;
-    solscanLink: string | undefined;
-    attributionResult: AttributionResult;
-    finalScore: number;
-    status: ConversionStatus;
-    riskResult: ReturnType<typeof evaluateRisk>;
-  };
-
-  // ── Pass 1: compute attribution for each affiliate ────────────────────────
-  const affiliateContexts: AffiliateContext[] = [];
-  const allAttributionResults: AttributionResult[] = [];
+  const entries: AggregatedLeaderboardEntry[] = [];
 
   for (const aff of affiliates) {
     const counts = eventMap.get(aff.id) ?? {};
@@ -199,13 +256,21 @@ export async function recomputeAttribution(
     const buyerWallet = buyerWalletMap.get(aff.id);
     const burstWalletCount = burstWalletSets.get(aff.id)?.size ?? 0;
     const sameIpUaClickCount = sameIpUaMap.get(aff.id) ?? 0;
+    const isLastTouch = lastTouchWinnerIds.has(aff.id);
 
-    // ── On-chain candidate detection ────────────────────────────────────────
+    // ── §9.3: Non-winners that had events in the current window lose their conversion ─
+    if (!isLastTouch && affiliatesWithCurrentEvents.has(aff.id)) {
+      await prisma.attributionConversion.deleteMany({
+        where: { campaignId, affiliateId: aff.id },
+      });
+    }
+
+    // ── On-chain candidate detection (last-touch winners only) ────────────────
     let onchainTxSignature: string | undefined;
     let onchainBuyAt: Date | undefined;
     let solscanLink: string | undefined;
 
-    if (buyerWallet && (walletConnects > 0 || buyIntents > 0)) {
+    if (isLastTouch && buyerWallet && (walletConnects > 0 || buyIntents > 0)) {
       try {
         const candidates = await bagsClient.getWalletTokenActivity(
           buyerWallet,
@@ -213,7 +278,9 @@ export async function recomputeAttribution(
           windowStart,
         );
         if (candidates.length > 0) {
-          const best = candidates.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())[0]!;
+          const best = candidates.sort(
+            (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
+          )[0]!;
           onchainTxSignature = best.txSignature;
           onchainBuyAt = best.timestamp;
           solscanLink = best.solscanLink;
@@ -222,10 +289,6 @@ export async function recomputeAttribution(
         // Non-fatal: proceed without on-chain candidate
       }
     }
-
-    // Use the actual latest intent event timestamp so applyLastTouch can
-    // correctly identify which affiliate had the most recent touch.
-    const latestIntentAt = latestIntentMap.get(aff.id);
 
     // ── Attribution scoring ──────────────────────────────────────────────────
     const signal: TrackingSignal = {
@@ -238,7 +301,7 @@ export async function recomputeAttribution(
       hasOnchainCandidate: onchainTxSignature != null,
       visitCount: clicks,
       firstSeenAt: windowStart,
-      lastSeenAt: latestIntentAt ?? windowStart,
+      lastSeenAt: new Date(),
     };
 
     const attributionInput: AttributionInput = {
@@ -284,48 +347,11 @@ export async function recomputeAttribution(
           ? ConversionStatus.Confirmed
           : ConversionStatus.Candidate;
 
-    allAttributionResults.push(attributionResult);
-    affiliateContexts.push({
-      aff,
-      counts,
-      clicks,
-      walletConnects,
-      buyIntents,
-      buyerWallet,
-      feeSnap,
-      burstWalletCount,
-      sameIpUaClickCount,
-      onchainTxSignature,
-      onchainBuyAt,
-      solscanLink,
-      attributionResult,
-      finalScore,
-      status,
-      riskResult,
-    });
-  }
-
-  // ── Pass 2: apply cross-affiliate last-touch dedup ────────────────────────
-  // applyLastTouch groups by buyerWallet and marks only the most recent touch.
-  // Non-last-touch affiliates do not get a confirmed/candidate conversion.
-  const dedupedResults = applyLastTouch(allAttributionResults);
-  const isLastTouchById = new Map(
-    dedupedResults.map((r) => [r.affiliateId, r.isLastTouch]),
-  );
-
-  const entries: AggregatedLeaderboardEntry[] = [];
-
-  for (const ctx of affiliateContexts) {
-    const { aff, clicks, walletConnects, buyIntents, buyerWallet, feeSnap,
-            onchainTxSignature, solscanLink, attributionResult,
-            finalScore, status, riskResult } = ctx;
-
-    const isLastTouch = isLastTouchById.get(aff.id) ?? true;
     const attributedVolume = feeSnap
       ? feeSnap.claimedFeesLamports + feeSnap.unclaimedFeesLamports
       : BigInt(0);
 
-    // ── Upsert attribution_conversion (last-touch affiliates only) ───────────
+    // ── Upsert conversion only for last-touch winners ─────────────────────────
     if (isLastTouch) {
       const existingConversion = await prisma.attributionConversion.findFirst({
         where: { campaignId, affiliateId: aff.id },
@@ -361,14 +387,9 @@ export async function recomputeAttribution(
           },
         });
       }
-    } else {
-      // Non-last-touch: remove any existing conversion so it doesn't linger
-      await prisma.attributionConversion.deleteMany({
-        where: { campaignId, affiliateId: aff.id },
-      });
     }
 
-    // ── Write risk flags (stale flags already deleted at start of recompute) ─
+    // ── Write risk flags (stale flags deleted at top of recompute) ────────────
     if (riskResult.flags.length > 0) {
       await prisma.riskFlag.createMany({
         data: riskResult.flags.map((f) => ({
@@ -391,18 +412,18 @@ export async function recomputeAttribution(
       clicks,
       walletConnects,
       buyIntents,
+      // Only winners get attributed conversions
       attributedConversions: isLastTouch && buyIntents > 0 ? 1 : 0,
       confidenceScore: finalScore,
       attributionType: attributionResult.attributionType as AttributionType,
       claimedFeesLamports: feeSnap ? Number(feeSnap.claimedFeesLamports) : 0,
       unclaimedFeesLamports: feeSnap ? Number(feeSnap.unclaimedFeesLamports) : 0,
-      status: isLastTouch ? status : ConversionStatus.Candidate,
+      status,
       riskLevel: (riskResult.riskLevel as RiskSeverity) ?? null,
-      reason: isLastTouch
-        ? attributionResult.reason
-        : `${attributionResult.reason} [non-last-touch: superseded by later affiliate touch]`,
+      reason: attributionResult.reason,
       solscanLink: solscanLink ?? undefined,
       txSignature: onchainTxSignature,
+      isLastTouch,
       partnerConfigPda: aff.partnerConfigPda ?? null,
       feeBps: null,
       riskFlags: riskResult.flags.map((f) => ({
@@ -415,7 +436,9 @@ export async function recomputeAttribution(
   }
 
   entries.sort((a, b) => b.confidenceScore - a.confidenceScore);
-  entries.forEach((e, i) => { e.rank = i + 1; });
+  entries.forEach((e, i) => {
+    e.rank = i + 1;
+  });
 
   return entries;
 }

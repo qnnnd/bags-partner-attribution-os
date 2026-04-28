@@ -41,7 +41,16 @@ export async function POST(_request: Request, { params }: RouteParams) {
     orderBy: { createdAt: "asc" },
   });
 
-  // Suspicious affiliate IDs — never generate payout for these
+  // Only affiliates with a valid last-touch attributionConversion are eligible.
+  // "Valid" means: exists, is not suspicious (status != 'suspicious').
+  // Non-last-touch affiliates won't have a conversion record at all (cleaned up by recompute).
+  const validConversions = await prisma.attributionConversion.findMany({
+    where: { campaignId, status: { not: "suspicious" } },
+    select: { affiliateId: true },
+  });
+  const eligibleIds = new Set(validConversions.map((c) => c.affiliateId));
+
+  // Keep the suspicious set separately for skipped-count reporting
   const suspiciousConversions = await prisma.attributionConversion.findMany({
     where: { campaignId, status: "suspicious" },
     select: { affiliateId: true },
@@ -65,11 +74,17 @@ export async function POST(_request: Request, { params }: RouteParams) {
 
   const generated: string[] = [];
   const skippedSuspicious: string[] = [];
+  const skippedNoConversion: string[] = [];
   const skippedLocked: string[] = [];
 
   for (const aff of affiliates) {
     if (suspiciousIds.has(aff.id)) {
       skippedSuspicious.push(aff.id);
+      continue;
+    }
+    // Require a valid last-touch conversion (non-suspicious) to be eligible
+    if (!eligibleIds.has(aff.id)) {
+      skippedNoConversion.push(aff.id);
       continue;
     }
 
@@ -117,7 +132,8 @@ export async function POST(_request: Request, { params }: RouteParams) {
     campaignId,
     generated: generated.length,
     skippedSuspicious: skippedSuspicious.length,
+    skippedNoConversion: skippedNoConversion.length,
     skippedLocked: skippedLocked.length,
-    message: `Generated/refreshed ${generated.length} payout ledger entries.`,
+    message: `Generated/refreshed ${generated.length} payout ledger entries. Skipped: ${skippedSuspicious.length} suspicious, ${skippedNoConversion.length} without valid attribution, ${skippedLocked.length} locked.`,
   });
 }

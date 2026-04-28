@@ -101,4 +101,10 @@ export interface LeaderboardEntry {
   solscanLink?: string;
   /** Phase 3: raw on-chain tx signature */
   txSignature?: string;
+  /**
+   * Phase 3+: true if this affiliate is the last-touch winner for at least one
+   * user journey (session or wallet) in the attribution window.
+   * Non-winners have attributedConversions=0 and are ineligible for payout.
+   */
+  isLastTouch: boolean;
 }

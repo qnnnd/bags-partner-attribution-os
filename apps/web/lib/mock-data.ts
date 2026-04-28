@@ -41,6 +41,7 @@ export const MOCK_LEADERBOARD: LeaderboardEntry[] = [
     unclaimedFeesLamports: 3_200_000_000,
     status: ConversionStatus.Confirmed,
     riskLevel: null,
+    isLastTouch: true,
   },
   {
     rank: 2,
@@ -58,6 +59,7 @@ export const MOCK_LEADERBOARD: LeaderboardEntry[] = [
     unclaimedFeesLamports: 1_500_000_000,
     status: ConversionStatus.Candidate,
     riskLevel: null,
+    isLastTouch: true,
   },
   {
     rank: 3,
@@ -75,6 +77,7 @@ export const MOCK_LEADERBOARD: LeaderboardEntry[] = [
     unclaimedFeesLamports: 900_000_000,
     status: ConversionStatus.Candidate,
     riskLevel: RiskSeverity.Low,
+    isLastTouch: true,
   },
 ];
 

@@ -23,6 +23,8 @@ export async function GET(_req: Request, { params }: RouteParams) {
   const live = await getBagsClient().getPartnerClaimStats(wallet);
   const config = await getBagsClient().getPartnerConfig(wallet);
 
+  const dataSource = (live.raw?.source as string | undefined) ?? process.env.BAGS_CLIENT_MODE ?? "unknown";
+
   return ok({
     partnerWallet: wallet,
     live: {
@@ -30,6 +32,7 @@ export async function GET(_req: Request, { params }: RouteParams) {
       unclaimedFeesLamports: live.unclaimedFeesLamports.toString(),
       partnerConfigPda: live.partnerConfigPda,
       lastClaimedAt: live.lastClaimedAt?.toISOString() ?? null,
+      source: dataSource,
     },
     config: config
       ? {
@@ -48,5 +51,6 @@ export async function GET(_req: Request, { params }: RouteParams) {
         }
       : null,
     mode: process.env.BAGS_CLIENT_MODE ?? "mock",
+    source: dataSource,
   });
 }

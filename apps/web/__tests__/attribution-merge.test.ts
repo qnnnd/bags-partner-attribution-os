@@ -60,6 +60,7 @@ function buildLeaderboard(
       unclaimedFeesLamports: fee ? Number(fee.unclaimedFeesLamports) : 0,
       status: ConversionStatus.Candidate,
       riskLevel: null,
+      isLastTouch: bi > 0 || wc > 0,
     };
   });
 

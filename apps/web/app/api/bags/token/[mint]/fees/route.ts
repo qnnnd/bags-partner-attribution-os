@@ -24,11 +24,15 @@ export async function GET(_req: Request, { params }: RouteParams) {
   // Live fetch (won't throw — client has fallback built in)
   const live = await getBagsClient().getTokenLifetimeFees(mint);
 
+  // Expose the per-call data source so UI can label fixture_fallback vs real_mainnet
+  const dataSource = (live.raw?.source as string | undefined) ?? process.env.BAGS_CLIENT_MODE ?? "unknown";
+
   return ok({
     tokenMint: mint,
     live: {
       lifetimeFeesLamports: live.lifetimeFeesLamports.toString(),
       lastUpdatedAt: live.lastUpdatedAt.toISOString(),
+      source: dataSource,
     },
     snapshot: snapshot
       ? {
@@ -38,5 +42,6 @@ export async function GET(_req: Request, { params }: RouteParams) {
         }
       : null,
     mode: process.env.BAGS_CLIENT_MODE ?? "mock",
+    source: dataSource,
   });
 }

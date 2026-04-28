@@ -131,10 +131,16 @@ export async function GET(_req: Request, { params }: RouteParams) {
     const conv = convMap.get(aff.id);
     const riskFlags = (riskMap.get(aff.id) ?? []).join("; ");
     const isSuspicious = conv?.status === "suspicious";
+    const hasValidConversion = !!conv && !isSuspicious;
 
-    const suggestedPayoutSol = isSuspicious
-      ? "0"
-      : lamportsToSolStr(fee?.unclaimedFeesLamports ?? BigInt(0));
+    // Only affiliates with a valid (non-suspicious) last-touch conversion get suggested payout
+    const suggestedPayoutSol =
+      !hasValidConversion ? "0" : lamportsToSolStr(fee?.unclaimedFeesLamports ?? BigInt(0));
+    const suggestedPayoutNote = isSuspicious
+      ? "FLAGGED - suspicious conversion"
+      : !conv
+        ? "no_valid_attribution"
+        : "eligible";
     const solscanLink = conv?.txSignature ? solscanTxLink(conv.txSignature) : "";
 
     // Phase 4: payout ledger data
@@ -169,7 +175,7 @@ export async function GET(_req: Request, { params }: RouteParams) {
       riskFlags,
       fee?.snapshotAt.toISOString() ?? "",
       suggestedPayoutSol,
-      isSuspicious ? "FLAGGED - not eligible for suggested payout" : "eligible",
+      suggestedPayoutNote,
       solscanLink,
       payoutId,
       payoutStatus,
