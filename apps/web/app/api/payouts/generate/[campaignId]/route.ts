@@ -4,11 +4,10 @@
  * Generates (or refreshes) suggested payout ledger entries for a campaign.
  *
  * Rules:
- *   - Only active affiliates are included
- *   - Affiliates with a suspicious conversion are EXCLUDED
+ *   - Only affiliates with a valid non-suspicious attributionConversion are eligible
+ *   - Non-last-touch affiliates have no conversion after recompute and are excluded
  *   - suggestedAmountLamports = unclaimedFeesLamports from the latest fee snapshot
- *   - Affiliates with no fee snapshot get suggestedAmountLamports = 0
- *   - Idempotent: upserts by (campaignId, affiliateId) — existing pending_review rows are refreshed
+ *   - Pending rows for no-longer-eligible affiliates are deleted
  *   - Rows in approved / tx_created / paid / rejected states are NOT modified
  */
 import { NextResponse } from "next/server";
@@ -41,23 +40,18 @@ export async function POST(_request: Request, { params }: RouteParams) {
     orderBy: { createdAt: "asc" },
   });
 
-  // Only affiliates with a valid last-touch attributionConversion are eligible.
-  // "Valid" means: exists, is not suspicious (status != 'suspicious').
-  // Non-last-touch affiliates won't have a conversion record at all (cleaned up by recompute).
   const validConversions = await prisma.attributionConversion.findMany({
     where: { campaignId, status: { not: "suspicious" } },
     select: { affiliateId: true },
   });
   const eligibleIds = new Set(validConversions.map((c) => c.affiliateId));
 
-  // Keep the suspicious set separately for skipped-count reporting
   const suspiciousConversions = await prisma.attributionConversion.findMany({
     where: { campaignId, status: "suspicious" },
     select: { affiliateId: true },
   });
   const suspiciousIds = new Set(suspiciousConversions.map((c) => c.affiliateId));
 
-  // Latest fee snapshot per affiliate
   const feeSnaps = await prisma.partnerFeeSnapshot.findMany({
     where: { campaignId, affiliateId: { not: null } },
     orderBy: { snapshotAt: "desc" },
@@ -65,7 +59,6 @@ export async function POST(_request: Request, { params }: RouteParams) {
   });
   const feeMap = new Map(feeSnaps.map((s) => [s.affiliateId!, s]));
 
-  // Existing pending_review ledger rows (only those can be refreshed)
   const existingPending = await prisma.payoutLedger.findMany({
     where: { campaignId, status: "pending_review" },
     select: { id: true, affiliateId: true },
@@ -76,32 +69,39 @@ export async function POST(_request: Request, { params }: RouteParams) {
   const skippedSuspicious: string[] = [];
   const skippedNoConversion: string[] = [];
   const skippedLocked: string[] = [];
+  const removedPending: string[] = [];
 
   for (const aff of affiliates) {
+    const existingPendingId = pendingMap.get(aff.id);
+
     if (suspiciousIds.has(aff.id)) {
       skippedSuspicious.push(aff.id);
+      if (existingPendingId) {
+        await prisma.payoutLedger.delete({ where: { id: existingPendingId } });
+        removedPending.push(aff.id);
+      }
       continue;
     }
-    // Require a valid last-touch conversion (non-suspicious) to be eligible
+
     if (!eligibleIds.has(aff.id)) {
       skippedNoConversion.push(aff.id);
+      if (existingPendingId) {
+        await prisma.payoutLedger.delete({ where: { id: existingPendingId } });
+        removedPending.push(aff.id);
+      }
       continue;
     }
 
     const fee = feeMap.get(aff.id);
     const suggestedAmountLamports = fee ? fee.unclaimedFeesLamports : BigInt(0);
 
-    const existingId = pendingMap.get(aff.id);
-
-    if (existingId) {
-      // Refresh existing pending row
+    if (existingPendingId) {
       await prisma.payoutLedger.update({
-        where: { id: existingId },
+        where: { id: existingPendingId },
         data: { suggestedAmountLamports },
       });
       generated.push(aff.id);
     } else {
-      // Check if a non-pending row already exists — do not overwrite
       const locked = await prisma.payoutLedger.findFirst({
         where: {
           campaignId,
@@ -114,7 +114,7 @@ export async function POST(_request: Request, { params }: RouteParams) {
         skippedLocked.push(aff.id);
         continue;
       }
-      // Create new pending_review row
+
       await prisma.payoutLedger.create({
         data: {
           campaignId,
@@ -134,6 +134,7 @@ export async function POST(_request: Request, { params }: RouteParams) {
     skippedSuspicious: skippedSuspicious.length,
     skippedNoConversion: skippedNoConversion.length,
     skippedLocked: skippedLocked.length,
-    message: `Generated/refreshed ${generated.length} payout ledger entries. Skipped: ${skippedSuspicious.length} suspicious, ${skippedNoConversion.length} without valid attribution, ${skippedLocked.length} locked.`,
+    removedPending: removedPending.length,
+    message: `Generated/refreshed ${generated.length} payout ledger entries. Skipped: ${skippedSuspicious.length} suspicious, ${skippedNoConversion.length} without valid attribution, ${skippedLocked.length} locked. Removed ${removedPending.length} stale pending entries.`,
   });
 }
