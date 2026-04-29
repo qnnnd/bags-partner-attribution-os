@@ -20,7 +20,7 @@ const BASE = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
 // A valid 87-char base58 signature (all 'A' chars are valid base58)
 const MOCK_TX_SIG = "A".repeat(87);
 
-test.describe("Phase 4 Payout Ledger Flow", () => {
+test.describe.serial("Phase 4 Payout Ledger Flow", () => {
   let campaignId: string;
   let affiliateId: string;
   let payoutId: string;

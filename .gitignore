@@ -35,3 +35,6 @@ pnpm-debug.log*
 
 # Prisma
 packages/db/src/generated/
+
+# Playwright artifacts
+apps/web/test-results/

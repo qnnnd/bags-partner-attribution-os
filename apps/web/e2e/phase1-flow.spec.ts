@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:3000";
 
-test.describe("Phase 1 Full Tracking Flow", () => {
+test.describe.serial("Phase 1 Full Tracking Flow", () => {
   let campaignId: string;
   let campaignSlug: string;
   let affiliateRefCode: string;

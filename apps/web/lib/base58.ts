@@ -29,8 +29,13 @@ export function decode(str: string): Uint8Array {
     if (digit === undefined) throw new Error(`Invalid base58 character: ${ch}`);
     x = x * BigInt(58) + BigInt(digit);
   }
-  const hex = x.toString(16).padStart(64, "0");
-  const bytes = Buffer.from(hex, "hex");
+  // Convert BigInt to minimal bytes without forced-length padding.
+  // Forced padding (e.g. padStart(64)) double-counts leading zero bytes
+  // that are already captured by the leading '1' characters in the string.
+  let hex = x === BigInt(0) ? "" : x.toString(16);
+  if (hex.length % 2) hex = "0" + hex;
+  const bytes = hex.length > 0 ? Buffer.from(hex, "hex") : Buffer.alloc(0);
+  // Each leading '1' in base58 represents one 0x00 byte
   const leadingZeros = str.match(/^1*/)?.[0]?.length ?? 0;
   return new Uint8Array([...new Array(leadingZeros).fill(0), ...bytes]);
 }
